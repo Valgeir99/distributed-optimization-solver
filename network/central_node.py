@@ -1,11 +1,14 @@
 import socket
 import threading
 import time
+import sqlite3
 
 from typing import override, Set
 
 from .connection import NodeConnection
 from .node import Node
+from utils.database_utils import create_database, teardown_database, connect_to_database, query_db, close_database_connection
+
 
 # TODO: later when running the code we would maybe always want to check if functions return True or False and do some
 # action depending, e.g. when sending messages so that we know it was sent successful... (but maybe not necessary for 
@@ -14,7 +17,7 @@ from .node import Node
 class CentralNode(Node):
     """A central node that can connect to multiple agent nodes and send/receive data."""
 
-    def __init__(self, host: str, port: int, id: int=None):
+    def __init__(self, host: str, port: int, db_path: str, id: int=None):
         """Initialize the node with a host address, port number, and ID."""
         super().__init__(host, port, id)
               
@@ -32,7 +35,10 @@ class CentralNode(Node):
         # TODO: where to store the actual problem instances?
 
 
-        # TODO: database for solution transactions and init database
+        # Database
+        self.db_path = db_path
+        create_database(self.db_path)
+        self.db_connection = connect_to_database(self.db_path)                 
 
 
 
@@ -43,6 +49,30 @@ class CentralNode(Node):
         self.socket.bind((self.host, self.port))
         self.socket.settimeout(10.0)
         self.socket.listen(self.max_connections)
+
+
+    def __create_db_connection(self):
+        """Create a connection to the database."""
+        connection = sqlite3.connect(self.db_path)
+        print(f"Connected to database at {self.db_path}")
+        return connection
+
+
+    def query_db(self, query: str, params: tuple=()):
+        """Query the database and return the result."""
+        cursor = self.db_connection.cursor()
+        cursor.execute(query, params)
+        result = cursor.fetchall()
+        cursor.close()
+        return result
+
+
+    def insert_into_db(self, query: str, params: tuple=()):
+        """Insert data into the database."""
+        cursor = self.db_connection.cursor()
+        cursor.execute(query, params)
+        self.db_connection.commit()
+        cursor.close()
 
 
 
@@ -71,6 +101,8 @@ class CentralNode(Node):
         # TODO: we techincally never want to stop central node so we should think about if 
         # we want to implement this method or not
         self.listening_for_connections_flag.clear()
+        close_database_connection(self.db_connection)
+        teardown_database(self.db_path)
         #self.join()
 
     
