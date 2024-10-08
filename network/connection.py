@@ -12,23 +12,22 @@ from typing import override, TYPE_CHECKING
 if TYPE_CHECKING:
     from .node import Node
 
-    # TODO: maybe we want agent and cental node to inherit from Node class?
-    # But mainly for typing purposes... maybe not necessary
 
 
 class NodeConnection(threading.Thread):
     """A connection from node to antoher node over network that can send/receive data."""
 
 
-    def __init__(self, this_node: 'Node', connection: socket.socket, other_node_id, other_node_host: str, other_node_port: int):
-        """Initialize the connection with a reference to the parent node and the socket connection. 
-           Also keep track of the peer's id, host address and port number."""
+    def __init__(self, this_node: 'Node', connection: socket.socket, problem_instance_id: str, other_node_id, other_node_host: str, other_node_port: int):
+        """Initialize the connection with a reference to the parent node, the problem instance the connection is meant for and the socket connection. 
+           Also keep track of the other's node id, host address and port number."""
         super().__init__()
         self.this_node = this_node
         self.connection = connection
         self.other_node_id = str(other_node_id)
         self.other_node_host = other_node_host
         self.other_node_port = other_node_port
+        self.problem_instance_id = problem_instance_id
         self.connected_flag = threading.Event()
 
         self.connection.settimeout(10.0)
@@ -57,7 +56,7 @@ class NodeConnection(threading.Thread):
 
 
 
-
+    # The object's start() function will call the run() function in a new thread
     @override
     def run(self):
         """Receive data from the connected node and handle it."""

@@ -23,6 +23,6 @@ class Node(threading.Thread):
         return hash((self.host, self.port))
 
 
-    def create_new_connection(self, connection, connected_node_id, connected_node_host, connected_node_port):
+    def create_new_connection(self, connection, problem_instance_id, connected_node_id, connected_node_host, connected_node_port):
         """Create a new connection object to handle communication with a connected node."""
-        return NodeConnection(self, connection, connected_node_id, connected_node_host, connected_node_port)
+        return NodeConnection(self, connection, problem_instance_id,  connected_node_id, connected_node_host, connected_node_port)

@@ -7,7 +7,7 @@ from typing import override, Set
 
 from .connection import NodeConnection
 from .node import Node
-from utils.database_utils import create_database, teardown_database, connect_to_database, query_db, close_database_connection
+from utils.database_utils import create_database, teardown_database
 
 
 # TODO: later when running the code we would maybe always want to check if functions return True or False and do some
@@ -21,6 +21,7 @@ class CentralNode(Node):
         """Initialize the node with a host address, port number, and ID."""
         super().__init__(host, port, id)
               
+        self.lock = threading.Lock()
         
         self.max_connections = 10   # TODO: do we want this?
 
@@ -38,24 +39,32 @@ class CentralNode(Node):
         # Database
         self.db_path = db_path
         create_database(self.db_path)
-        self.db_connection = connect_to_database(self.db_path)                 
+        self.db_connection = self.__connect_to_database()
+
+        self.insert_into_db("INSERT INTO central_nodes (id, host, port) VALUES (?, ?, ?)", (self.id, self.host, self.port))
 
 
 
     def __init_server(self):
         """Initialize the server socket to listen for incoming connections."""
-        print(f"Initialization of the Node on: {str(self.host)}:{str(self.port)} with id ({str(self.id)})")
+        print(f"Central node started on: {str(self.host)}:{str(self.port)} with id ({str(self.id)})")
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.host, self.port))
         self.socket.settimeout(10.0)
         self.socket.listen(self.max_connections)
 
 
-    def __create_db_connection(self):
+    def __connect_to_database(self):
         """Create a connection to the database."""
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, check_same_thread=False)   # check_same_thread=False is needed for multithreading
         print(f"Connected to database at {self.db_path}")
         return connection
+
+
+    def __disconnect_from_database(self):
+        """Close the connection to the database."""
+        self.db_connection.close()
+        print(f"Disconnected from database at {self.db_path}")
 
 
     def query_db(self, query: str, params: tuple=()):
@@ -69,10 +78,11 @@ class CentralNode(Node):
 
     def insert_into_db(self, query: str, params: tuple=()):
         """Insert data into the database."""
-        cursor = self.db_connection.cursor()
-        cursor.execute(query, params)
-        self.db_connection.commit()
-        cursor.close()
+        with self.lock:
+            cursor = self.db_connection.cursor()
+            cursor.execute(query, params)
+            self.db_connection.commit()
+            cursor.close()
 
 
 
@@ -101,7 +111,7 @@ class CentralNode(Node):
         # TODO: we techincally never want to stop central node so we should think about if 
         # we want to implement this method or not
         self.listening_for_connections_flag.clear()
-        close_database_connection(self.db_connection)
+        self.__disconnect_from_database()
         teardown_database(self.db_path)
         #self.join()
 
@@ -121,15 +131,33 @@ class CentralNode(Node):
             try:
                 connection, address = self.socket.accept()
                 if len(self.connections) < self.max_connections:
-                    print(f"Central node ({self.id}) accepted connection from {address}")
-                    connected_node_id = connection.recv(4096).decode('utf-8').split(":")[0]
+                    agent_node_id = connection.recv(4096).decode('utf-8')
                     connection.send(self.id.encode('utf-8'))
+                    (agent_node_host, agent_node_port, problem_instance_id) = connection.recv(4096).decode('utf-8').split(";")
+                    print(f"Central node ({self.id}) accepted connection from {agent_node_host}:{agent_node_port} with id ({agent_node_id})")
                     # TODO: here we might want to somehow check if connection is ok on both ends, but how to do that?
                     # We would also need to do the same for agent node
-                    thread_central_node_side_connection = self.create_new_connection(connection, connected_node_id, address[0], address[1])
+                    thread_central_node_side_connection = self.create_new_connection(connection, problem_instance_id, agent_node_id, agent_node_host, agent_node_port)
                     thread_central_node_side_connection.start()
                     
-                    self.connections.add(thread_central_node_side_connection)
+                    
+
+                    try:
+                        self.insert_into_db("INSERT OR IGNORE INTO agent_nodes (id, host, port) VALUES (?, ?, ?)", (agent_node_id, agent_node_host, agent_node_port))
+                        self.connections.add(thread_central_node_side_connection)
+
+                    except sqlite3.Error as e:
+                        print(f"Error while inserting agent node ({agent_node_id}) into database: {e}")
+                        # TODO: maybe we want to close the connection here and remove the connection from the set of connections
+                        # And also somehow let agent node know that connection was not successful
+                        # TODO: we could also not use try-except and then the program would crash and we would know that something is wrong
+
+                    try:
+                        self.insert_into_db("INSERT INTO connections (agent_node_id, central_node_id, problem_instance_id) VALUES (?, ?, ?)", (agent_node_id, self.id, problem_instance_id))
+
+                    except sqlite3.Error as e:
+                        print(f"Error while inserting connection between agent node ({agent_node_id}) and central node ({self.id}) for problem instance ({problem_instance_id}) into database: {e}")
+
 
                 else:
                     print(f"Max number of connections reached: {self.max_connections}")
