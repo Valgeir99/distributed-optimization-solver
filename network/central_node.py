@@ -17,6 +17,17 @@ from utils.database_utils import create_database, teardown_database
 class CentralNode(Node):
     """A central node that can connect to multiple agent nodes and send/receive data."""
 
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        """Singleton pattern to ensure only one instance of the central node is created."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        else:
+            raise Exception("CentralNode instance already exists!")
+        return cls._instance
+        
+
     def __init__(self, host: str, port: int, db_path: str, id: int=None):
         """Initialize the node with a host address, port number, and ID."""
         super().__init__(host, port, id)
