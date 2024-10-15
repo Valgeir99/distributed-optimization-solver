@@ -68,15 +68,9 @@ class NodeConnection(threading.Thread):
             except socket.timeout:
                 #print(f"Connection timeout occurred while receiving data from {self.other_node_host}:{self.other_node_port} by node ({str(self.this_node.id)})")
                 continue
-            
-            # TODO: but if there is a socket error or other exception then how can we handle it?
-            # I mean right now we are closing the connection which is fine but the node would still kind of 
-            # think that it is solving the problem but the connection is closed so it would need to realise 
-            # that and connect back to the central node. Would we want to implement that? But if we need 
-            # to implement this and all extreeme cases then it is a lot of things... (and I will 100% forget 
-            # to do some of them)
-            # -> We could implement a reconnect method in the node class that would try to reconnect to the
-            #    central node and then we could call this method in the except block below.
+        
+            # On exception, the connection will be closed (both ends will get notified and they should 
+            # have removed it from list of connections) and the thread will stop
             except socket.error as e:
                 print(f"Socket error while receiving data from {self.other_node_host}:{self.other_node_port} by node ({str(self.this_node.id)}): {e}")
                 break

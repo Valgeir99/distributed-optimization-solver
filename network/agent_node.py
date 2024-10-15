@@ -36,6 +36,7 @@ class AgentNode(Node):
             problem_instance_id (str): The id of the problem instance that this agent node is solving though this connection.
         """
 
+        # TODO: make unit tests for all of these cases
         if self.host == host and self.port == host:
             print("Cannot connect to self")
             return False
@@ -50,10 +51,11 @@ class AgentNode(Node):
                 return False
          
         # Create connection to central node
+        connection = None
         try:
             print(f"Try to connected from {self.host}:{self.port} to {host}:{port}")
             
-            connection = socket.create_connection((host, port))
+            connection = socket.create_connection((host, port))   # automatically binds agent node's side of the connection to a random port
         
             # Basic information exchange of the id's of the nodes!
             connection.send((self.id).encode('utf-8')) # Send my id and port to the connected node!
@@ -62,18 +64,20 @@ class AgentNode(Node):
             # Send connection details (host, port and problem instance id) to the central node
             connection.send((self.host + ";" + str(self.port) + ";" + problem_instance_id).encode('utf-8'))
 
-        # TODO: make unit tests for the exception 
+        # TODO: make unit tests for the exception (we would need to mock this and raise an exception)
         except socket.error as e:
             # Handle socket errors which should arise from the create_connection() method
             print(f"Failed to connect from {self.host}:{self.port} to {host}:{port}: {e}")
             if connection is not None:
                 connection.close()
             return False
-
+        
         thread_agent_node_side_connection = self.create_new_connection(connection, problem_instance_id, central_node_id, host, port)
         thread_agent_node_side_connection.start()
         self.connections.add(thread_agent_node_side_connection)
         #self.problem_instances_ids.add(problem_instance_id)
+
+        return True
         
 
     # TODO: we need also host:port / id of central node
@@ -135,6 +139,14 @@ class AgentNode(Node):
                     return False
         print("This problem instance is not being solved")
         return False
+    
+
+    def unexpected_connection_close(self, problem_instance_id: str):
+        """Handle the case when a connection is closed unexpectedly (just used for testing)."""
+        # So this method should close the connection but don't remove it from the set of connections
+        for conn in self.connections:
+            if conn.problem_instance_id == problem_instance_id:
+                conn.connection.close()
     
 
     def remove_connection(self, connection: NodeConnection):

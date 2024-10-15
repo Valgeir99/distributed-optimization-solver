@@ -14,85 +14,96 @@ from network.central_node import CentralNode
 
 try:
 
+    ## TEST: create central node with illegal port number - should raise exception
+    # print("TEST: create central node with illegal port number - should raise exception")
+    # try:
+    #     central_node = CentralNode("127.0.0.1", -1, "../database/central_node.db", "1")
+    # except Exception as e:
+    #     print(e)
+
     central_node = CentralNode("127.0.0.1", 10000, "../database/central_node.db", "1")
     central_node.start()
 
     time.sleep(5)
 
     ## TEST: create another central node - should raise exception (singelton pattern)
-    try:
-        central_node2 = CentralNode("127.0.0.1", 10000, "../database/central_node.db", "2")
-        central_node2.start()
-    except Exception as e:
-        print(e)
+    # print("TEST: create another central node - should raise exception (singelton pattern)")
+    # try:
+    #     central_node2 = CentralNode("127.0.0.1", 10000, "../database/central_node.db", "2")
+    # except Exception as e:
+    #     print(e)
+
+    # time.sleep(5)
+
+    agent1 = AgentNode("127.0.0.1", 10001, "2")
+    agent1.start()
 
     time.sleep(5)
 
-    # agent1 = AgentNode("127.0.0.1", 10001, "2")
-    # agent1.start()
+    ## TEST: connect to central node with illegal port number - should return False
+    print("TEST: connect to central node with illegal port number - should return False")
+    result = agent1.connect_to_central_node("127.0.0.1", -1, "instance_1")
+    print(result)
 
-    # time.sleep(5)
+    ## TEST: connect to random host:port - should return False
+    print("TEST: connect to random host:port - should return False")
+    result = agent1.connect_to_central_node("127.0.0.1", 10009, "instance_1")
+    print(result)
 
-    # agent1.connect_to_central_node("127.0.0.1", 10000, "instance_1")
-    # agent1.connect_to_central_node("127.0.0.1", 10000, "instance_2")
-    
-    # time.sleep(5)
+    ## TEST: connect to central node twice - should return False
+    print("TEST: connect to central node twice - should return False")
+    agent1.connect_to_central_node("127.0.0.1", 10000, "instance_1")
+    result = agent1.connect_to_central_node("127.0.0.1", 10000, "instance_1")
+    print(result)
 
-    # ## TEST: database should be up to date
-    # result = central_node.query_db("SELECT * FROM central_nodes")
-    # print(result)
-    # result = central_node.query_db("SELECT * FROM agent_nodes")
-    # print(result)
-    # result = central_node.query_db("SELECT * FROM connections")
-    # print(result)
+    ## TEST: connect to agent from agent - should return False
+    print("TEST: connect to agent from agent - should return False")
+    agent2 = AgentNode("127.0.0.1", 10002, "3")
+    agent2.start()
+    time.sleep(5)
+    result = agent1.connect_to_central_node("127.0.0.1", 10002, "instance_1")
+    print(result)
 
-    # time.sleep(5)
-
-    # ## TEST: there should be two connections for both nodes
-    # print("central node connections:", central_node.connections)
-    # print("agent1 node connection:", agent1.connections)
-
-    # time.sleep(5)
-
-    # ## TEST: send messages for certain problem instance
-    # problem_instance = "instance_1"
-    # agent1.send_message_to_central_node("127.0.0.1", 10000, problem_instance, "Hello from agent1!")
-    # time.sleep(1)
-    # central_node.send_message_to_agent("127.0.0.1", 10001, problem_instance, "Hello to agent1 from central node!")
-
-    # time.sleep(5)
-
-    # ## TEST: Connections should have one less item after agent stopped solving one of the problem instances
-    # agent1.stop_solving_problem_instance("instance_1")
-    # time.sleep(15)
-    # print("central node connections:", central_node.connections)
-    # print("agent1 node connection:", agent1.connections)
-    # result = central_node.query_db("SELECT * FROM connections")
-    # print(result)
-
-    # time.sleep(5)
-
-    # ## TEST: we should return False when sending message to disconnected agent (same for central node)
-    # result = agent1.send_message_to_central_node("127.0.0.1", 10000, "instance_1", "Hello from agent1!")
-    # print(result)
-    # time.sleep(1)
-    # result = central_node.send_message_to_agent("127.0.0.1", 10001, "instance_1", "Hello to agent1 from central node!")
-    # print(result)
+    ## TEST: create two agent nodes with the same host:port - does not do anything since
+    ## we cannot know if agents have the same host:port (so on open network this is 
+    ## not a problem but on localhost it is just our responsibility to not do this. 
+    ## So on local network there will just be two agents receiving the same message - which we don't want)
+    print("TEST: create two agent nodes with the same host:port - should not give error")
+    agent3 = AgentNode("127.0.0.1", 10001, "4")
+    agent3.start()
+    time.sleep(5)
+    agent3.connect_to_central_node("127.0.0.1", 10000, "instance_1")
+    time.sleep(5)
+    print(agent1.connections)
+    print(agent3.connections)
+    central_node.send_message_to_agent("127.0.0.1", 10001, "instance_1", "Hello to agent1/agent3 from central node!")
+    time.sleep(1)
 
 
-    # ## TEST: Connections should be empty after agent stopped (central node should also have no connections)
-    # agent1.stop()
-    # agent1.join()
-    # time.sleep(20)
-    # result = central_node.query_db("SELECT * FROM connections")
-    # print(result)
-    # print("central node connections:", central_node.connections)
-    # print("agent1 node connection:", agent1.connections)
+    ## TEST: create agent with illegal port number and then connect to central node - should work 
+    ## normally since this agent port number does not matter at all since when using socket.create_connection()
+    ## then the agent node's side of the connection is bound to a random port! TODO: fix code base so that 
+    ## agent node's port number is not needed at all (since it is not used)
+    print("TEST: create agent with illegal port number and then connect to central node - should ...")
+    agent4 = AgentNode("127.0.0.1", -1, "5")
+    agent4.start()
+    time.sleep(5)
+    result = agent4.connect_to_central_node("127.0.0.1", 10000, "instance_1")
+    print(result)
+    agent4.send_message_to_central_node("127.0.0.1", 10000, "instance_1", "Hello from agent4!")
 
-    # time.sleep(5)
+    ## TEST: close connection to central node unexpectedly - connection will be closed and connections set is updated
+    ##       then try to message the central node - we just get False since this connection does not exist anymore
+    print("TEST: close connection to central node unexpectedly - should handle it like normal disconnect")
+    agent1.unexpected_connection_close("instance_1")
+    time.sleep(5)
+    print(agent1.connections)
+    print(central_node.connections)
+    result = agent1.send_message_to_central_node("127.0.0.1", 10000, "instance_1", "Hello from agent1!")
+    print(result)
 
 
-
+    time.sleep(5)
 
 except KeyboardInterrupt:
     print("\nKeyboardInterrupt received. Shutting down...")

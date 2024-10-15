@@ -63,6 +63,8 @@ class CentralNode(Node):
             self.socket.listen(5)   # the number of connections that can be queued before the system starts to reject new connections
         except socket.error as e:
             raise socket.error(f"Error while initializing the server socket on {self.host}:{self.port}: {e}")
+        except Exception as e:
+            raise Exception(f"Error while initializing the server socket on {self.host}:{self.port}: {e}")
 
 
     def __connect_to_database(self):
@@ -130,15 +132,18 @@ class CentralNode(Node):
         """Send a message to a specific agent node.
         Returns:
             bool: True if the message was sent successfully, False otherwise."""
+        success = False
         for conn in self.connections:
             if conn.other_node_host == host and conn.other_node_port == port and conn.problem_instance_id == problem_instance_id:
             #if conn.other_node_id == id and conn.problem_instance_id == problem_instance_id:
                 conn.send(message)
-                return True
+                success = True
+                #return True   # TODO: we changed this so we now allow message to multiple nodes which share connection address (fix later)
 
         #print(f"Agent ({agent_id}) not found")
-        print("Agent not found")
-        return False
+        if not success:
+            print("Agent not found")
+        return success
     
 
     def receive_message_from_agent(self, agent_id: str, message: str):
@@ -164,6 +169,7 @@ class CentralNode(Node):
         """Stop the node's listener thread and close all connections."""
         # We techincally never want to stop central node... but good to have this for testing
         self.listening_for_connections_flag.clear()
+        self.join()   # do not continue with this thread until central node thread is done (run() method is done)
         self.__disconnect_from_database()
         teardown_database(self.db_path)
 
