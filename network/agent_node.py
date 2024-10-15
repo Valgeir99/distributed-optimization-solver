@@ -1,7 +1,8 @@
 import socket
+import time
 import threading
 
-from typing import override, Set
+from typing import Set
 
 from .connection import NodeConnection
 from .node import Node
@@ -12,16 +13,17 @@ class AgentNode(Node):
 
     def __init__(self, host: str, port: int, id: int=None):
         """Initialize the node with a host address, port number, and ID."""
-        super().__init__(host, port, id)
-        
-        #self.max_connections = 1   # TODO: maybe we don't need this if connection is only single variable
-      
+        super().__init__(host, port, id)   
         
         self.connections: Set[NodeConnection] = set()
 
-        self.problem_instances_ids: Set[str] = set()
+        self.problem_instances_ids: Set[str] = set()   # TODO: do we need this? We have access to the problem instances through the connections - but maybe 
+        # in the case where connection fails unexpectedly we might want to know which problem instances we were solving?
 
         print(f"Agent node ({self.id}) started")
+
+        # TODO: map problem instance id to central node id / host:port?
+
 
     
     def connect_to_central_node(self, host: str, port: int, problem_instance_id: str): 
@@ -33,10 +35,6 @@ class AgentNode(Node):
             port (int): The port number of the central node to connect to.
             problem_instance_id (str): The id of the problem instance that this agent node is solving though this connection.
         """
-
-        # if len(self.connections) >= self.max_connections:
-        #     print(f"Max number of connections reached: {self.max_connections}")
-        #     return False
 
         if self.host == host and self.port == host:
             print("Cannot connect to self")
@@ -50,15 +48,13 @@ class AgentNode(Node):
             if connection.other_node_host == host and connection.other_node_port == port and connection.problem_instance_id == problem_instance_id:
                 print("Already connected to this node with this problem instance")
                 return False
-        
-        
-        
+         
         # Create connection to central node
         try:
-            connection = socket.create_connection((host, port))
-            
             print(f"Try to connected from {self.host}:{self.port} to {host}:{port}")
-
+            
+            connection = socket.create_connection((host, port))
+        
             # Basic information exchange of the id's of the nodes!
             connection.send((self.id).encode('utf-8')) # Send my id and port to the connected node!
             central_node_id = connection.recv(4096).decode('utf-8') # When a node is connected, it sends its id!
@@ -66,20 +62,21 @@ class AgentNode(Node):
             # Send connection details (host, port and problem instance id) to the central node
             connection.send((self.host + ";" + str(self.port) + ";" + problem_instance_id).encode('utf-8'))
 
-            # TODO: maybe to make sure that the connection is ok in both ways we should check if central node id is not None?
-            # and if it is then we should close the connection and return False
-
-            thread_agent_node_side_connection = self.create_new_connection(connection, problem_instance_id, central_node_id, host, port)
-            thread_agent_node_side_connection.start()
-
-            self.connections.add(thread_agent_node_side_connection)
-
-        except Exception as e:
+        # TODO: make unit tests for the exception 
+        except socket.error as e:
+            # Handle socket errors which should arise from the create_connection() method
             print(f"Failed to connect from {self.host}:{self.port} to {host}:{port}: {e}")
+            if connection is not None:
+                connection.close()
             return False
+
+        thread_agent_node_side_connection = self.create_new_connection(connection, problem_instance_id, central_node_id, host, port)
+        thread_agent_node_side_connection.start()
+        self.connections.add(thread_agent_node_side_connection)
+        #self.problem_instances_ids.add(problem_instance_id)
         
 
-
+    # TODO: we need also host:port / id of central node
     def get_problem_instance(self, problem_instance_id: str):
         """Get the problem instance from the central node."""
         # Ask for the problem instance from the central node
@@ -89,53 +86,84 @@ class AgentNode(Node):
         pass
 
     
-    def disconnect_from_central_node(self, host: str, port: int):
-        # TODO: Implement this method
-
-        # How to do that?
-        # Because we have two connections for each pair of nodes, we need to
-        # close both connections. We can do this by sending a message to the
-        # other node to tell it to close the connection?
-
+    # TODO: might want to implement such a method and if the connection is closed then we would 
+    # maybe want to e.g. remove it and remove from problme_instances_ids
+    # But is this actually something we want to have? What do we gain from this? Think!
+    def check_connections(self):
+        """Check if all connections for the agent's problem instances are still alive.
+        Returns:
+            bool: True if all connections are alive, False otherwise."""
+        for conn in self.connections:
+            if conn.problem_instance_id in self.problem_instances_ids:
+                pass
+                # See socket_peeking.py example
         
-        pass
+            
 
 
-
-    def receive_message_from_central_node(self, data: str):
-        """Handle data received from the central node."""
+    
+    def receive_message_from_central_node(self, msg: str):
+        """Handle message received from the central node."""
         pass
 
     
-    # TODO: not sure if I want to use central_node_id or host:port to identify central nodes?
-    # Probably the id since later we will need to map problem instance id to central node id / host:port
-    def send_message_to_central_node(self, central_node_id: str, problem_instance_id: str, data: str):
-        """Send data to the central node that gave us this problem instance."""
+    # TODO: maybe we only want messages to be assiciated with a problem instance id and not the central node id?
+    # Because essentially an agent node does not care to which central node it is connected to it is only
+    # interested in the problem instance id
+    def send_message_to_central_node(self, host: str, port: int, problem_instance_id: str, msg: str):
+        """Send message to the central node who gave this agent node the problem instance."""
         for conn in self.connections:
-            if conn.other_node_id == central_node_id and conn.problem_instance_id == problem_instance_id:
-                conn.send(data)
+            if conn.other_node_host == host and conn.other_node_port == port and conn.problem_instance_id == problem_instance_id:
+                conn.send(msg)
                 return True
-        print("This connection does not exist")
+        print("The connection for this problem instance does not exist")
         return False
 
+
+    # TODO: do we also need host:port / id of central node? Should not need it but maybe for completeness?
+    def stop_solving_problem_instance(self, problem_instance_id: str):
+        """Stop solving a problem instance and close the connection to the central node (central 
+        node will also close its side of the connection)."""
+        for conn in self.connections:
+            if conn.problem_instance_id == problem_instance_id:
+                try:                
+                    conn.close_connection()   # when agent node side of the connection is closed then the central node side will also close
+                    conn.join()   # do not continue with this thread until conn thread is done
+                    return True
+                except Exception as e:
+                    print(f"Error while closing connection when agent is stopping solving problem instance: {e}")
+                    return False
+        print("This problem instance is not being solved")
+        return False
+    
+
+    def remove_connection(self, connection: NodeConnection):
+        """Remove a connection from the node's list of active connections."""
+        try:
+            self.connections.remove(connection)
+        except KeyError as e:
+            print(f"Error while removing connection from set of connections: {e}")
+        #self.problem_instances_ids.remove(connection.problem_instance_id)
+        
     
 
     def stop(self):
-        """Close all connections to central nodes and reset the node's state."""
-        for conn in self.connections:
-            conn.close_connection()
-    
+        """Stop solving all problem instances and close all connections - disconnect 
+        from network."""
+        print(f"Agent node ({str(self.id)}) stopping...")
+
+        connections_copy = self.connections.copy()   # we copy the set since we are modifying it in the loop
+        for conn in connections_copy:
+            conn.close_connection()   # when agent node side of the connection is closed then the central node side will also close
+
+        time.sleep(1)
+
+        for conn in connections_copy:   # we call join() in seperate loop since otherwise we would need to wait for the connection to close before we can close the next one
+            conn.join()
+
+
         self.connections = set()
+        self.problem_instances_ids = set()
 
         print(f"Agent node ({self.id}) stopped")
 
-        # TODO: should we stop the thread? Otherwise this method is basically just like the method
-        # disconnect_from_central_node()
-
-    
-    def terminate(self):
-        """Stop the node, close all connections, and stop the node's thread."""
-        # self.stop()
-        # self.join()
-        # TODO: how to stop run() method when not overriding it in the class?
-        pass
