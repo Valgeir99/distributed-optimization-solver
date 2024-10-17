@@ -19,29 +19,27 @@ class NodeConnection(threading.Thread):
     """A connection from node to antoher node over network that can send/receive data."""
 
 
-    def __init__(self, this_node: 'Node', connection: socket.socket, problem_instance_id: str, other_node_id, other_node_host: str, other_node_port: int):
+    def __init__(self, this_node: 'Node', connection: socket.socket, problem_instance_id: str, other_node_id: str):
         """Initialize the connection with a reference to the parent node, the problem instance the connection is meant for and the socket connection. 
-           Also keep track of the other's node id, host address and port number."""
+           Also keep track of the other's node id."""
         super().__init__()
         self.this_node = this_node
         self.connection = connection
-        self.other_node_id = str(other_node_id)
-        self.other_node_host = other_node_host
-        self.other_node_port = int(other_node_port)
         self.problem_instance_id = problem_instance_id
+        self.other_node_id = str(other_node_id)
 
         self.connected_flag = threading.Event()
 
         self.connection.settimeout(10.0)   # timeout if no data is received within 10 seconds
 
-    
+
     def send(self, data):
         """Send the data to the connected node"""
         # TODO: specify what format the data is on - now str later probably dict/json
         # TODO: exception handling? what if the connection is closed? what if the data is not in the correct format?
 
         if data is not None:
-            print(f"Send data to {self.other_node_host}:{self.other_node_port} from node ({str(self.this_node.id)}) : {data}")
+            print(f"Send data to node ({self.other_node_id}) from node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {data}")
             self.connection.sendall(data.encode())
             #self.connection.sendall(data + self.COMPR_CHAR + self.EOT_CHAR)   # TODO: maybe use this instead and deal with the EOT in run() method accordingly
 
@@ -55,28 +53,28 @@ class NodeConnection(threading.Thread):
     @override
     def run(self):
         """Receive data from the connected node and handle it."""
-        #print("Connection established")
+        print(f"Connection established from {self.connection.getsockname()} to {self.connection.getpeername()}")
         self.connected_flag.set()
         while self.connected_flag.is_set():
             try:
                 data = self.connection.recv(1024)
                 if not data:
                     break
-                print(f"Received data from {self.other_node_host}:{self.other_node_port} by node ({str(self.this_node.id)}) : {data.decode()}")
+                print(f"Received data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {data.decode()}")
                 # TODO: here we need to call nodes method to handle the message appropriately
 
             except socket.timeout:
-                #print(f"Connection timeout occurred while receiving data from {self.other_node_host}:{self.other_node_port} by node ({str(self.this_node.id)})")
+                #print(f"Connection timeout occurred while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id})")
                 continue
         
             # On exception, the connection will be closed (both ends will get notified and they should 
             # have removed it from list of connections) and the thread will stop
             except socket.error as e:
-                print(f"Socket error while receiving data from {self.other_node_host}:{self.other_node_port} by node ({str(self.this_node.id)}): {e}")
+                print(f"Socket error while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {e}")
                 break
 
             except Exception as e:
-                print(f"Error while receiving data from {self.other_node_host}:{self.other_node_port} by node ({str(self.this_node.id)}): {e}")
+                print(f"Error while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {e}")
                 break
             
             time.sleep(0.5)
@@ -86,7 +84,7 @@ class NodeConnection(threading.Thread):
         # When calling .close() on the socket, the other end will get notified that the connection is closed and will also exit the while loop above and close the connection!
         try:
             self.connection.close()
-            print(f"Connection from {self.this_node.host}:{self.this_node.port} to {self.other_node_host}:{self.other_node_port} closed.")
+            print(f"Connection from node ({self.this_node.id}) to node ({self.other_node_id}) closed.")
         except Exception as e:
             print(f"Error while closing connection: {e}")
 
@@ -95,7 +93,7 @@ class NodeConnection(threading.Thread):
 
 
     def __str__(self):
-        return f"NodeConnection from {self.this_node.host}:{self.this_node.port} with id ({str(self.this_node.id)}) to {self.other_node_host}:{self.other_node_port} with id ({str(self.other_node_id)})"
+        return f"NodeConnection from node ({self.this_node.id}) to node ({self.other_node_id}) for problem ({self.problem_instance_id})"
 
     def __repr__(self):
-        return f"NodeConnection from {self.this_node.host}:{self.this_node.port} with id ({str(self.this_node.id)}) to {self.other_node_host}:{self.other_node_port} with id ({str(self.other_node_id)})"
+        return f"NodeConnection from node ({self.this_node.id}) to node ({self.other_node_id}) for problem ({self.problem_instance_id})"

@@ -28,9 +28,12 @@ class CentralNode(Node):
         return cls._instance
         
 
-    def __init__(self, host: str, port: int, db_path: str, id: int=None):
-        """Initialize the node with a host address, port number, and ID."""
-        super().__init__(host, port, id)
+    def __init__(self, host: str, port: int, db_path: str, id: str=None):
+        """Initialize the node with a host address, port number, ID and path to local database."""
+        super().__init__(id)
+
+        self.host = host
+        self.port = port
               
         self.lock = threading.Lock()
         
@@ -58,13 +61,13 @@ class CentralNode(Node):
         print(f"Central node started on: {str(self.host)}:{str(self.port)} with id ({str(self.id)})")
         try: 
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.bind((self.host, self.port))
+            self.socket.bind((self.host, self.port))   # TODO: if testing on different machines then we need to bind to '0.0.0.0' to listen on all interfaces
             self.socket.settimeout(10.0)   # timeout if no data is received within 10 seconds
             self.socket.listen(5)   # the number of connections that can be queued before the system starts to reject new connections
         except socket.error as e:
-            raise socket.error(f"Error while initializing the server socket on {self.host}:{self.port}: {e}")
+            raise socket.error(f"Error while initializing the server socket on {self.host}:{self.port} for central node ({self.id}): {e}")
         except Exception as e:
-            raise Exception(f"Error while initializing the server socket on {self.host}:{self.port}: {e}")
+            raise Exception(f"Error while initializing the server socket on {self.host}:{self.port} for central node ({self.id}): {e}")
 
 
     def __connect_to_database(self):
@@ -87,7 +90,7 @@ class CentralNode(Node):
             print(f"Error while disconnecting from database at {self.db_path}: {e}")
 
 
-    def query_db(self, query: str, params: tuple=()):
+    def query_db(self, query: str, params: tuple=()) -> list:
         """Query the database and return the result.
         Returns: 
             list: The result of the query or None if an error occurred."""
@@ -113,8 +116,8 @@ class CentralNode(Node):
                 self.db_connection.commit()
                 cursor.close()
             except sqlite3.Error as e:
-                print(f"Error while editing data in database at {self.db_path}: {e}")
                 self.db_connection.rollback()
+                raise sqlite3.Error(f"Error while editing data in database at {self.db_path}: {e}")
 
 
 
@@ -127,23 +130,17 @@ class CentralNode(Node):
             conn.send(message)
 
 
-    # TODO: maybe use host:port instead of id for the agent node?
-    def send_message_to_agent(self, host: str, port: int, problem_instance_id: str, message: str):
+    def send_message_to_agent(self, agent_id: str, problem_instance_id: str, message: str) -> bool:
         """Send a message to a specific agent node.
         Returns:
             bool: True if the message was sent successfully, False otherwise."""
-        success = False
         for conn in self.connections:
-            if conn.other_node_host == host and conn.other_node_port == port and conn.problem_instance_id == problem_instance_id:
-            #if conn.other_node_id == id and conn.problem_instance_id == problem_instance_id:
+            if conn.other_node_id == agent_id and conn.problem_instance_id == problem_instance_id:
                 conn.send(message)
-                success = True
-                #return True   # TODO: we changed this so we now allow message to multiple nodes which share connection address (fix later)
+                return True
 
-        #print(f"Agent ({agent_id}) not found")
-        if not success:
-            print("Agent not found")
-        return success
+        print(f"Connection for agent node ({agent_id}) and problem ({problem_instance_id}) not found in connections")
+        return False
     
 
     def receive_message_from_agent(self, agent_id: str, message: str):
@@ -159,10 +156,14 @@ class CentralNode(Node):
         """Remove a connection from the node's list of active connections."""
         try:
             self.connections.remove(connection)
+            self.edit_data_in_db("DELETE FROM connections WHERE agent_node_id = ? AND central_node_id = ? AND problem_instance_id = ?", (connection.other_node_id, connection.this_node.id, connection.problem_instance_id))
         except KeyError as e:
             print(f"Error while removing connection from set of connections: {e}")
+        except sqlite3.Error as e:
+            print(f"Error while removing connection from database: {e}")
+        except Exception as e:
+            print(f"Error in remove_connection(): {e}")
 
-        self.edit_data_in_db("DELETE FROM connections WHERE agent_node_id = ? AND central_node_id = ? AND problem_instance_id = ?", (connection.other_node_id, connection.this_node.id, connection.problem_instance_id))
 
 
     def stop(self):
@@ -183,39 +184,42 @@ class CentralNode(Node):
 
     def __listen(self):
         """Listen for incoming connections and create a new socket to handle each connection."""
-        print(f"Listening for connections on {self.host}:{self.port}")
+        print(f"Listening for connections on {self.host}:{self.port} by central node ({self.id})")
 
         fail_count = 0
         while self.listening_for_connections_flag.is_set():
             try:
                 connection, address = self.socket.accept()
 
-                agent_node_id = connection.recv(4096).decode('utf-8')
+                # Receive and send connection information from/to agent node
+                (agent_node_id, problem_instance_id) = connection.recv(4096).decode('utf-8').split(";")
                 connection.send(self.id.encode('utf-8'))
-                (agent_node_host, agent_node_port, problem_instance_id) = connection.recv(4096).decode('utf-8').split(";")
 
-                # Check if this connection already exits in the database
-                # But how will we cancel the connection so it also closes on the agent node side? (if we assume we 
-                # don't trust the agent to handle these things themselves - now the agent node will not even initiate 
-                # the connection if it already has this connection so we don't need to worry about this - but just 
-                # thinking about what Joe said about agent nodes can do whatever they want but is that also for proof of concept?)
-                # Because if we do connection.close() here then yes the I think the agent node will also close!
-                # TODO: make unit test for this (if we implement it)!
+                # TODO: make unit test for this
+                # Check if this connection already exists - if so close it and continue without creating the connection object
+                connection_exists = False
+                for conn in self.connections:
+                    if conn.other_node_id == agent_node_id and conn.problem_instance_id == problem_instance_id:
+                        connection_exists = True
+                        print(f"Connection from agent node ({agent_node_id}) for problem instance ({problem_instance_id}) already exists")
+                        connection.close()   # when central node side of the connection is closed then the agent node side will also close
+                        break
 
-                print(f"Central node ({self.id}) accepted connection from {agent_node_host}:{agent_node_port} with id ({agent_node_id})")
-                
-                thread_central_node_side_connection = self.create_new_connection(connection, problem_instance_id, agent_node_id, agent_node_host, agent_node_port)
+                if connection_exists:
+                    continue   # continue to next iteration of the while loop so we don't create a new connection object
+
+                print(f"Central node ({self.id}) accepted connection from agent node ({agent_node_id}) for problem instance ({problem_instance_id})")
+                thread_central_node_side_connection = self.create_new_connection(connection, problem_instance_id, agent_node_id)
                 thread_central_node_side_connection.start()
                 
                 try:
-                    self.edit_data_in_db("INSERT OR IGNORE INTO agent_nodes (id, host, port) VALUES (?, ?, ?)", (agent_node_id, agent_node_host, agent_node_port))
+                    self.edit_data_in_db("INSERT OR IGNORE INTO agent_nodes (id) VALUES (?)", (agent_node_id))
                     self.connections.add(thread_central_node_side_connection)
                 except sqlite3.Error as e:
                     print(f"Error while inserting agent node ({agent_node_id}) into database: {e}")
                 
                 try:
-                    # TODO: maybe use INSERT OR IGNORE here also since we might have already inserted this connection (if something went wrong)
-                    self.edit_data_in_db("INSERT INTO connections (agent_node_id, central_node_id, problem_instance_id) VALUES (?, ?, ?)", (agent_node_id, self.id, problem_instance_id))
+                    self.edit_data_in_db("INSERT OR IGNORE INTO connections (agent_node_id, central_node_id, problem_instance_id) VALUES (?, ?, ?)", (agent_node_id, self.id, problem_instance_id))
                 except sqlite3.Error as e:
                     print(f"Error while inserting connection between agent node ({agent_node_id}) and central node ({self.id}) for problem instance ({problem_instance_id}) into database: {e}")
 
@@ -226,7 +230,7 @@ class CentralNode(Node):
                 continue
 
             except socket.error as e:
-                print(f"Socket error while listening for connections by {self.host}:{self.port} : {e}")
+                print(f"Socket error while listening for connections on {self.host}:{self.port} by central node ({self.id}) : {e}")
                 # TODO: here we are allowing the central node to fail 5 times before stopping it... this 
                 # might be good for testing so more robustness
                 # fail_count += 1
@@ -242,13 +246,13 @@ class CentralNode(Node):
                 break
 
             except Exception as e:
-                print(f"Error while listening for connections by {self.host}:{self.port} : {e}")
+                print(f"Error while listening for connections on {self.host}:{self.port} by central node ({self.id}) : {e}")
                 break
 
             time.sleep(0.5)
 
         
-        print(f"Central node ({str(self.id)}) stopping...")
+        print(f"Central node ({self.id}) stopping...")
 
         # Clean up - close all connections
         connections_copy = self.connections.copy()   # we copy the set since we are modifying it in the loop

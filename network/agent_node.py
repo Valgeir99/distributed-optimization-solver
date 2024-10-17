@@ -9,11 +9,12 @@ from .node import Node
 
 
 class AgentNode(Node):
-    """An agent node that can connect to a single central node and send/receive data."""
+    """An agent node that can connect to central node (can have multiple connections) and 
+    send/receive data."""
 
-    def __init__(self, host: str, port: int, id: int=None):
-        """Initialize the node with a host address, port number, and ID."""
-        super().__init__(host, port, id)   
+    def __init__(self, id: int=None):
+        """Initialize the node with ID."""
+        super().__init__(id)
         
         self.connections: Set[NodeConnection] = set()
 
@@ -26,7 +27,7 @@ class AgentNode(Node):
 
 
     
-    def connect_to_central_node(self, host: str, port: int, problem_instance_id: str): 
+    def connect_to_central_node(self, host: str, port: int, problem_instance_id: str) -> bool: 
         """Initiate a connection to a central node and create a socket for bidirectional communication.
         Returns:
             bool: True if the connection was successful, False otherwise.
@@ -37,42 +38,36 @@ class AgentNode(Node):
         """
 
         # TODO: make unit tests for all of these cases
-        if self.host == host and self.port == host:
-            print("Cannot connect to self")
-            return False
-
         if problem_instance_id in self.problem_instances_ids:
             print("Already solving this problem instance")
             return False
 
-        for connection in self.connections:
-            if connection.other_node_host == host and connection.other_node_port == port and connection.problem_instance_id == problem_instance_id:
+        for conn in self.connections:
+            if conn.connection.getpeername()[0] == host and conn.connection.getpeername()[1] == port and conn.problem_instance_id == problem_instance_id:
                 print("Already connected to this node with this problem instance")
                 return False
          
         # Create connection to central node
         connection = None
         try:
-            print(f"Try to connected from {self.host}:{self.port} to {host}:{port}")
+            print(f"Try to connected from agent node ({self.id}) to central node for problem instance ({problem_instance_id})")
             
             connection = socket.create_connection((host, port))   # automatically binds agent node's side of the connection to a random port
         
-            # Basic information exchange of the id's of the nodes!
-            connection.send((self.id).encode('utf-8')) # Send my id and port to the connected node!
-            central_node_id = connection.recv(4096).decode('utf-8') # When a node is connected, it sends its id!
+            # Send connection information to central node!
+            connection.send((self.id + ";" + problem_instance_id).encode('utf-8'))   # send agent id and problem id to the connected node
+            central_node_id = connection.recv(4096).decode('utf-8')   # when central node is connected, it sends its id
 
-            # Send connection details (host, port and problem instance id) to the central node
-            connection.send((self.host + ";" + str(self.port) + ";" + problem_instance_id).encode('utf-8'))
 
         # TODO: make unit tests for the exception (we would need to mock this and raise an exception)
         except socket.error as e:
             # Handle socket errors which should arise from the create_connection() method
-            print(f"Failed to connect from {self.host}:{self.port} to {host}:{port}: {e}")
+            print(f"Failed to connect from agent node ({self.id}) to central node listening at {host}:{port} : {e}")
             if connection is not None:
-                connection.close()
+                connection.close()   # when agent node side of the connection is closed then the central node side will also close
             return False
         
-        thread_agent_node_side_connection = self.create_new_connection(connection, problem_instance_id, central_node_id, host, port)
+        thread_agent_node_side_connection = self.create_new_connection(connection, problem_instance_id, central_node_id)
         thread_agent_node_side_connection.start()
         self.connections.add(thread_agent_node_side_connection)
         #self.problem_instances_ids.add(problem_instance_id)
@@ -80,8 +75,7 @@ class AgentNode(Node):
         return True
         
 
-    # TODO: we need also host:port / id of central node
-    def get_problem_instance(self, problem_instance_id: str):
+    def get_problem_instance(self, cental_node_id: str, problem_instance_id: str):
         """Get the problem instance from the central node."""
         # Ask for the problem instance from the central node
         #try:
@@ -111,23 +105,23 @@ class AgentNode(Node):
         pass
 
     
-    # TODO: maybe we only want messages to be assiciated with a problem instance id and not the central node id?
-    # Because essentially an agent node does not care to which central node it is connected to it is only
-    # interested in the problem instance id
-    def send_message_to_central_node(self, host: str, port: int, problem_instance_id: str, msg: str):
-        """Send message to the central node who gave this agent node the problem instance."""
+    def send_message_to_central_node(self, problem_instance_id: str, msg: str) -> bool:
+        """Send message to the central node who gave this agent node the problem instance.
+        Returns:
+            bool: True if the message was sent successfully, False otherwise."""
         for conn in self.connections:
-            if conn.other_node_host == host and conn.other_node_port == port and conn.problem_instance_id == problem_instance_id:
+            if conn.problem_instance_id == problem_instance_id:
                 conn.send(msg)
                 return True
-        print("The connection for this problem instance does not exist")
+        print(f"The connection for this problem instance ({problem_instance_id}) does not exist")
         return False
 
 
-    # TODO: do we also need host:port / id of central node? Should not need it but maybe for completeness?
-    def stop_solving_problem_instance(self, problem_instance_id: str):
+    def stop_solving_problem_instance(self, problem_instance_id: str) -> bool:
         """Stop solving a problem instance and close the connection to the central node (central 
-        node will also close its side of the connection)."""
+        node will also close its side of the connection).
+        Returns:
+            bool: True if the connection was closed successfully, False otherwise."""
         for conn in self.connections:
             if conn.problem_instance_id == problem_instance_id:
                 try:                

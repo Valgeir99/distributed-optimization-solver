@@ -12,11 +12,10 @@ CREATE TABLE problem_instances (
 
 -- Create agent_nodes table
 CREATE TABLE agent_nodes (
-    id TEXT PRIMARY KEY,
-    host TEXT NOT NULL,
-    port INTEGER NOT NULL
+    id TEXT PRIMARY KEY
+    --host TEXT NOT NULL,
+    --port INTEGER NOT NULL
 );
--- TODO: make host:port unique?
 
 -- Create central_nodes table
 CREATE TABLE central_nodes (
@@ -24,7 +23,6 @@ CREATE TABLE central_nodes (
     host TEXT NOT NULL,
     port INTEGER NOT NULL
 );
--- TODO: make host:port unique?
 
 -- Create all_solutions table
 CREATE TABLE all_solutions (

@@ -15,7 +15,7 @@ try:
 
     time.sleep(5)
 
-    agent1 = AgentNode("127.0.0.1", 10001, "2")
+    agent1 = AgentNode("2")
     agent1.start()
 
     time.sleep(5)
@@ -43,9 +43,9 @@ try:
 
     ## TEST: send messages for certain problem instance
     problem_instance = "instance_1"
-    agent1.send_message_to_central_node("127.0.0.1", 10000, problem_instance, "Hello from agent1!")
+    agent1.send_message_to_central_node(problem_instance, "Hello from agent1!")
     time.sleep(1)
-    central_node.send_message_to_agent("127.0.0.1", 10001, problem_instance, "Hello to agent1 from central node!")
+    central_node.send_message_to_agent("2", problem_instance, "Hello to agent1 from central node!")
 
     time.sleep(5)
 
@@ -60,10 +60,10 @@ try:
     time.sleep(5)
 
     ## TEST: we should return False when sending message to disconnected agent (same for central node)
-    result = agent1.send_message_to_central_node("127.0.0.1", 10000, "instance_1", "Hello from agent1!")
+    result = agent1.send_message_to_central_node("instance_1", "Hello from agent1!")
     print(result)
     time.sleep(1)
-    result = central_node.send_message_to_agent("127.0.0.1", 10001, "instance_1", "Hello to agent1 from central node!")
+    result = central_node.send_message_to_agent("2", "instance_1", "Hello to agent1 from central node!")
     print(result)
 
 
