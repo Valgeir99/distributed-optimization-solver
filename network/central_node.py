@@ -40,7 +40,7 @@ class CentralNode(Node):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.__init_server()
 
-        self.connections: Set[NodeConnection] = set()
+        self.connections: Set[NodeConnection] = set()   # TODO: initilize this by values from database (if it makes sense that central node can accedentally be stopped and started again)
         self.listening_for_connections_flag = threading.Event()
 
         self.problem_instance_storage: Set[str] = set()   # store id of problem instances that this central node is storing
@@ -130,16 +130,16 @@ class CentralNode(Node):
             conn.send(message)
 
 
-    def send_message_to_agent(self, agent_id: str, problem_instance_id: str, message: str) -> bool:
+    def send_message_to_agent(self, agent_id: str, message: str) -> bool:
         """Send a message to a specific agent node.
         Returns:
             bool: True if the message was sent successfully, False otherwise."""
         for conn in self.connections:
-            if conn.other_node_id == agent_id and conn.problem_instance_id == problem_instance_id:
+            if conn.other_node_id == agent_id:
                 conn.send(message)
                 return True
 
-        print(f"Connection for agent node ({agent_id}) and problem ({problem_instance_id}) not found in connections")
+        print(f"Connection for agent node ({agent_id}) not found in connections")
         return False
     
 
@@ -156,7 +156,7 @@ class CentralNode(Node):
         """Remove a connection from the node's list of active connections."""
         try:
             self.connections.remove(connection)
-            self.edit_data_in_db("DELETE FROM connections WHERE agent_node_id = ? AND central_node_id = ? AND problem_instance_id = ?", (connection.other_node_id, connection.this_node.id, connection.problem_instance_id))
+            self.edit_data_in_db("DELETE FROM connections WHERE agent_node_id = ? AND central_node_id = ?", (connection.other_node_id, connection.this_node.id))
         except KeyError as e:
             print(f"Error while removing connection from set of connections: {e}")
         except sqlite3.Error as e:
@@ -192,24 +192,24 @@ class CentralNode(Node):
                 connection, address = self.socket.accept()
 
                 # Receive and send connection information from/to agent node
-                (agent_node_id, problem_instance_id) = connection.recv(4096).decode('utf-8').split(";")
+                agent_node_id = connection.recv(4096).decode('utf-8')
                 connection.send(self.id.encode('utf-8'))
 
                 # TODO: make unit test for this
                 # Check if this connection already exists - if so close it and continue without creating the connection object
                 connection_exists = False
                 for conn in self.connections:
-                    if conn.other_node_id == agent_node_id and conn.problem_instance_id == problem_instance_id:
+                    if conn.other_node_id == agent_node_id:
                         connection_exists = True
-                        print(f"Connection from agent node ({agent_node_id}) for problem instance ({problem_instance_id}) already exists")
+                        print(f"Connection from agent node ({agent_node_id}) already exists")
                         connection.close()   # when central node side of the connection is closed then the agent node side will also close
                         break
 
                 if connection_exists:
                     continue   # continue to next iteration of the while loop so we don't create a new connection object
 
-                print(f"Central node ({self.id}) accepted connection from agent node ({agent_node_id}) for problem instance ({problem_instance_id})")
-                thread_central_node_side_connection = self.create_new_connection(connection, problem_instance_id, agent_node_id)
+                print(f"Central node ({self.id}) accepted connection from agent node ({agent_node_id})")
+                thread_central_node_side_connection = self.create_new_connection(connection, agent_node_id)
                 thread_central_node_side_connection.start()
                 
                 try:
@@ -219,9 +219,9 @@ class CentralNode(Node):
                     print(f"Error while inserting agent node ({agent_node_id}) into database: {e}")
                 
                 try:
-                    self.edit_data_in_db("INSERT OR IGNORE INTO connections (agent_node_id, central_node_id, problem_instance_id) VALUES (?, ?, ?)", (agent_node_id, self.id, problem_instance_id))
+                    self.edit_data_in_db("INSERT OR IGNORE INTO connections (agent_node_id, central_node_id) VALUES (?, ?)", (agent_node_id, self.id))
                 except sqlite3.Error as e:
-                    print(f"Error while inserting connection between agent node ({agent_node_id}) and central node ({self.id}) for problem instance ({problem_instance_id}) into database: {e}")
+                    print(f"Error while inserting connection between agent node ({agent_node_id}) and central node ({self.id}) into database: {e}")
 
 
             

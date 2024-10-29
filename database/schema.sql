@@ -1,5 +1,8 @@
 --## Database schema for database on central nodes for distributed optimization solver ##--
 
+-- TODO: update schema to be the same as in drawio diagram
+
+
 -- Create problem_instances table
 CREATE TABLE problem_instances (
     id TEXT PRIMARY KEY,
@@ -51,11 +54,11 @@ CREATE TABLE best_solutions (
 CREATE TABLE connections (
     agent_node_id TEXT,
     central_node_id TEXT,
-    problem_instance_id TEXT,
-    PRIMARY KEY (agent_node_id, central_node_id, problem_instance_id), -- agent_node_id, central_node_id, and problem_instance_id together form a unique key
+    --problem_instance_id TEXT,
+    PRIMARY KEY (agent_node_id, central_node_id), -- agent_node_id, central_node_id, and problem_instance_id together form a unique key
     FOREIGN KEY (agent_node_id) REFERENCES agent_nodes (id) ON DELETE CASCADE, -- ON DELETE CASCADE to delete all connections to a node when it is deleted
-    FOREIGN KEY (central_node_id) REFERENCES central_nodes (id) ON DELETE CASCADE,
-    FOREIGN KEY (problem_instance_id) REFERENCES problem_instances (id) ON DELETE CASCADE
+    FOREIGN KEY (central_node_id) REFERENCES central_nodes (id) ON DELETE CASCADE
+    --FOREIGN KEY (problem_instance_id) REFERENCES problem_instances (id) ON DELETE CASCADE
 );
 
 -- TODO: possibly add rewards table for tracking rewards

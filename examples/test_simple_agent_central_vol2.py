@@ -42,19 +42,19 @@ try:
 
     ## TEST: connect to central node with illegal port number - should return False
     print("TEST: connect to central node with illegal port number - should return False")
-    result = agent1.connect_to_central_node("127.0.0.1", -1, "instance_1")
+    result = agent1.connect_to_central_node("127.0.0.1", -1)
     print(result)
 
     ## TEST: connect to random host:port - should return False
     print("TEST: connect to random host:port - should return False")
-    result = agent1.connect_to_central_node("127.0.0.1", 10009, "instance_1")
+    result = agent1.connect_to_central_node("127.0.0.1", 10009)
     print(result)
 
     ## TEST: connect to central node twice - should return False TODO: now we don't check this for agent node but only for central node so see how it behaves!
     print("TEST: connect to central node twice - should return False")
-    agent1.connect_to_central_node("127.0.0.1", 10000, "instance_1")
+    agent1.connect_to_central_node("127.0.0.1", 10000)
     time.sleep(5)
-    result = agent1.connect_to_central_node("127.0.0.1", 10000, "instance_1")
+    result = agent1.connect_to_central_node("127.0.0.1", 10000)
     print(result)
 
     ## TEST: connect to agent from agent - should return False
@@ -62,17 +62,17 @@ try:
     agent2 = AgentNode("3")
     agent2.start()
     time.sleep(5)
-    result = agent1.connect_to_central_node("127.0.0.1", 10002, "instance_1")
+    result = agent1.connect_to_central_node("127.0.0.1", 10002)
     print(result)
 
     ## TEST: close connection to central node unexpectedly - connection will be closed and connections set is updated
     ##       then try to message the central node - we just get False since this connection does not exist anymore
     print("TEST: close connection to central node unexpectedly - should handle it like normal disconnect")
-    agent1.unexpected_connection_close("instance_1")
+    agent1.unexpected_connection_close()
     time.sleep(5)
-    print(agent1.connections)
+    print(agent1.connection)
     print(central_node.connections)
-    result = agent1.send_message_to_central_node("instance_1", "Hello from agent1!")
+    result = agent1.send_message_to_central_node("Hello from agent1!")
     print(result)
 
 

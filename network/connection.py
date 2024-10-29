@@ -19,13 +19,12 @@ class NodeConnection(threading.Thread):
     """A connection from node to antoher node over network that can send/receive data."""
 
 
-    def __init__(self, this_node: 'Node', connection: socket.socket, problem_instance_id: str, other_node_id: str):
-        """Initialize the connection with a reference to the parent node, the problem instance the connection is meant for and the socket connection. 
+    def __init__(self, this_node: 'Node', connection: socket.socket, other_node_id: str):
+        """Initialize the connection with a reference to the parent node, and the socket connection. 
            Also keep track of the other's node id."""
         super().__init__()
         self.this_node = this_node
         self.connection = connection
-        self.problem_instance_id = problem_instance_id
         self.other_node_id = str(other_node_id)
 
         self.connected_flag = threading.Event()
@@ -39,7 +38,7 @@ class NodeConnection(threading.Thread):
         # TODO: exception handling? what if the connection is closed? what if the data is not in the correct format?
 
         if data is not None:
-            print(f"Send data to node ({self.other_node_id}) from node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {data}")
+            print(f"Send data to node ({self.other_node_id}) from node ({self.this_node.id}) : {data}")
             self.connection.sendall(data.encode())
             #self.connection.sendall(data + self.COMPR_CHAR + self.EOT_CHAR)   # TODO: maybe use this instead and deal with the EOT in run() method accordingly
 
@@ -60,21 +59,21 @@ class NodeConnection(threading.Thread):
                 data = self.connection.recv(1024)
                 if not data:
                     break
-                print(f"Received data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {data.decode()}")
+                print(f"Received data from node ({self.other_node_id}) by node ({self.this_node.id}) : {data.decode()}")
                 # TODO: here we need to call nodes method to handle the message appropriately
 
             except socket.timeout:
-                #print(f"Connection timeout occurred while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id})")
+                #print(f"Connection timeout occurred while receiving data from node ({self.other_node_id}) by node ({self.this_node.id})")
                 continue
         
             # On exception, the connection will be closed (both ends will get notified and they should 
             # have removed it from list of connections) and the thread will stop
             except socket.error as e:
-                print(f"Socket error while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {e}")
+                print(f"Socket error while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) : {e}")
                 break
 
             except Exception as e:
-                print(f"Error while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) for problem ({self.problem_instance_id}) : {e}")
+                print(f"Error while receiving data from node ({self.other_node_id}) by node ({self.this_node.id}) : {e}")
                 break
             
             time.sleep(0.5)
@@ -88,12 +87,12 @@ class NodeConnection(threading.Thread):
         except Exception as e:
             print(f"Error while closing connection: {e}")
 
-        # Remove the connection from the node's set of connections
+        # Remove the connection from the node's connection
         self.this_node.remove_connection(self)
 
 
     def __str__(self):
-        return f"NodeConnection from node ({self.this_node.id}) to node ({self.other_node_id}) for problem ({self.problem_instance_id})"
+        return f"NodeConnection from node ({self.this_node.id}) to node ({self.other_node_id})"
 
     def __repr__(self):
-        return f"NodeConnection from node ({self.this_node.id}) to node ({self.other_node_id}) for problem ({self.problem_instance_id})"
+        return f"NodeConnection from node ({self.this_node.id}) to node ({self.other_node_id})"

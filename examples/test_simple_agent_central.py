@@ -20,8 +20,7 @@ try:
 
     time.sleep(5)
 
-    agent1.connect_to_central_node("127.0.0.1", 10000, "instance_1")
-    agent1.connect_to_central_node("127.0.0.1", 10000, "instance_2")
+    agent1.connect_to_central_node("127.0.0.1", 10000)
     
     time.sleep(5)
 
@@ -35,35 +34,34 @@ try:
 
     time.sleep(5)
 
-    ## TEST: there should be two connections for both nodes
+    ## TEST: there should be single connection for both nodes
     print("central node connections:", central_node.connections)
-    print("agent1 node connection:", agent1.connections)
+    print("agent1 node connection:", agent1.connection)
 
     time.sleep(5)
 
-    ## TEST: send messages for certain problem instance
-    problem_instance = "instance_1"
-    agent1.send_message_to_central_node(problem_instance, "Hello from agent1!")
+    ## TEST: send messages
+    agent1.send_message_to_central_node("Hello from agent1!")
     time.sleep(1)
-    central_node.send_message_to_agent("2", problem_instance, "Hello to agent1 from central node!")
+    central_node.send_message_to_agent("2", "Hello to agent1 from central node!")
 
     time.sleep(5)
 
     ## TEST: Connections should have one less item after agent stopped solving one of the problem instances
-    agent1.stop_solving_problem_instance("instance_1")
+    agent1.disconnect_from_central_node()
     time.sleep(15)
     print("central node connections:", central_node.connections)
-    print("agent1 node connection:", agent1.connections)
+    print("agent1 node connection:", agent1.connection)
     result = central_node.query_db("SELECT * FROM connections")
     print(result)
 
     time.sleep(5)
 
     ## TEST: we should return False when sending message to disconnected agent (same for central node)
-    result = agent1.send_message_to_central_node("instance_1", "Hello from agent1!")
+    result = agent1.send_message_to_central_node("Hello from agent1!")
     print(result)
     time.sleep(1)
-    result = central_node.send_message_to_agent("2", "instance_1", "Hello to agent1 from central node!")
+    result = central_node.send_message_to_agent("2", "Hello to agent1 from central node!")
     print(result)
 
 
@@ -74,7 +72,7 @@ try:
     result = central_node.query_db("SELECT * FROM connections")
     print(result)
     print("central node connections:", central_node.connections)
-    print("agent1 node connection:", agent1.connections)
+    print("agent1 node connection:", agent1.connection)
 
     time.sleep(5)
 

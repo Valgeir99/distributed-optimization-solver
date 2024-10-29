@@ -27,11 +27,11 @@ class Node(threading.Thread, ABC):
         return hash((self.host, self.port))
 
 
-    def create_new_connection(self, connection: socket.socket, problem_instance_id: str, connected_node_id: str) -> NodeConnection:
+    def create_new_connection(self, connection: socket.socket, connected_node_id: str) -> NodeConnection:
         """Create a new connection object to handle communication with a connected node."""
-        return NodeConnection(self, connection, problem_instance_id,  connected_node_id)
+        return NodeConnection(self, connection,  connected_node_id)
     
     @abstractmethod
     def remove_connection(self, connection: NodeConnection):
-        """Remove a connection from the list of active connections."""
+        """Remove connection."""
         pass
