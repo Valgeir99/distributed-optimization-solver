@@ -10,12 +10,12 @@ from network.central_node import CentralNode
 
 try:
 
-    central_node = CentralNode("127.0.0.1", 10000, "../database/central_node.db", "1")
+    central_node = CentralNode("127.0.0.1", 10000, "../database/central_node.db")
     central_node.start()
 
     time.sleep(5)
 
-    agent1 = AgentNode("2")
+    agent1 = AgentNode("agent1")
     agent1.start()
 
     time.sleep(5)
@@ -43,7 +43,7 @@ try:
     ## TEST: send messages
     agent1.send_message_to_central_node("Hello from agent1!")
     time.sleep(1)
-    central_node.send_message_to_agent("2", "Hello to agent1 from central node!")
+    central_node.send_message_to_agent(agent1.id, "Hello to agent1 from central node!")
 
     time.sleep(5)
 
@@ -61,7 +61,7 @@ try:
     result = agent1.send_message_to_central_node("Hello from agent1!")
     print(result)
     time.sleep(1)
-    result = central_node.send_message_to_agent("2", "Hello to agent1 from central node!")
+    result = central_node.send_message_to_agent(agent1.id, "Hello to agent1 from central node!")
     print(result)
 
 

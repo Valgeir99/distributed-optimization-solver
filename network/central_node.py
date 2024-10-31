@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import sqlite3
+import uuid
 
 from typing import Set, override
 
@@ -28,9 +29,11 @@ class CentralNode(Node):
         return cls._instance
         
 
-    def __init__(self, host: str, port: int, db_path: str, id: str=None):
+    def __init__(self, host: str, port: int, db_path: str):
         """Initialize the node with a host address, port number, ID and path to local database."""
-        super().__init__(id)
+        super().__init__()
+
+        self.id = self.__generate_id()
 
         self.host = host
         self.port = port
@@ -54,8 +57,17 @@ class CentralNode(Node):
 
         self.edit_data_in_db("INSERT INTO central_nodes (id, host, port) VALUES (?, ?, ?)", (self.id, self.host, self.port))
 
-
-
+    cnt = 0
+    def __generate_id(self) -> str:
+        """Generate a unique identifier for node.
+        Returns:
+            str: A unique identifier for node."""
+        #return str(uuid.uuid4())
+        # TODO: use this for testing for readability but remove later
+        self.cnt += 1
+        return str(self.cnt)
+        
+        
     def __init_server(self):
         """Initialize the server socket to listen for incoming connections."""
         print(f"Central node started on: {str(self.host)}:{str(self.port)} with id ({str(self.id)})")
@@ -191,12 +203,16 @@ class CentralNode(Node):
             try:
                 connection, address = self.socket.accept()
 
-                # Receive and send connection information from/to agent node
-                agent_node_id = connection.recv(4096).decode('utf-8')
-                connection.send(self.id.encode('utf-8'))
+                # Generate id for agent node and send it along with central node id
+                agent_node_id = self.__generate_id()
+                connection.send((self.id + ";" + agent_node_id).encode('utf-8'))
 
                 # TODO: make unit test for this
                 # Check if this connection already exists - if so close it and continue without creating the connection object
+                # TODO: now since central node creates id for agent node we can't really check if the connection already exists
+                # since everytime agent node connects it will get a new id... (I guess that is just how we define the connections
+                # so not much we can do actually in this implementation - other implementations might use e.g. accounts for agents 
+                # so we would identify agents by accounts not by connections basically)
                 connection_exists = False
                 for conn in self.connections:
                     if conn.other_node_id == agent_node_id:
@@ -213,7 +229,7 @@ class CentralNode(Node):
                 thread_central_node_side_connection.start()
                 
                 try:
-                    self.edit_data_in_db("INSERT OR IGNORE INTO agent_nodes (id) VALUES (?)", (agent_node_id))
+                    self.edit_data_in_db("INSERT OR IGNORE INTO agent_nodes (id) VALUES (?)", (agent_node_id,))
                     self.connections.add(thread_central_node_side_connection)
                 except sqlite3.Error as e:
                     print(f"Error while inserting agent node ({agent_node_id}) into database: {e}")

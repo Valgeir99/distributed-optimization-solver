@@ -21,16 +21,21 @@ class AgentNode(Node):
     The agent node is only solving a single problem instance at a time, but can store multiple
     problem instances in local storage."""
 
-    def __init__(self, id: int=None):
-        """Initialize the node with ID."""
-        super().__init__(id)
+    def __init__(self, name: str):
+        """Initialize the node with name."""
+        super().__init__()
+
+        # Agent has a name (for logging purposes) and id that central node gives to it (for network purposes with central node)
+        self.name = str(name)
+        self.id = None
         
         self.connection: NodeConnection = None
 
-        self.problem_instances_ids: Set[str] = set()   # TODO: do we need this? We have access to the problem instances through the connections - but maybe 
-        # in the case where connection fails unexpectedly we might want to know which problem instances we were solving?
+        # TODO: change so that we use a dictionary instead and we can store the id as key and other problem instance information 
+        # as value, like name, best obj, file location sol location and so on (nested dictionary)
+        self.problem_instances_ids: Set[str] = set()  
 
-        print(f"Agent node ({self.id}) started")
+        print(f"Agent node named {self.name} started")
 
 
 
@@ -58,19 +63,19 @@ class AgentNode(Node):
         # Create connection to central node
         connection = None
         try:
-            print(f"Try to connected from agent node ({self.id}) to central node")
+            print(f"Try to connected from agent node named {self.name} to central node")
             
             connection = socket.create_connection((host, port))   # automatically binds agent node's side of the connection to a random port
         
-            # Send connection information to central node!
-            connection.send((self.id).encode('utf-8'))   # send agent id and problem id to the connected node
-            central_node_id = connection.recv(4096).decode('utf-8')   # when central node is connected, it sends its id
+            # Receive central node id and a generated id for self from central node
+            (central_node_id, agent_node_id) = connection.recv(4096).decode('utf-8').split(';')
+            self.id = agent_node_id
 
 
         # TODO: make unit tests for the exception (we would need to mock this and raise an exception)
         except socket.error as e:
             # Handle socket errors which should arise from the create_connection() method
-            print(f"Failed to connect from agent node ({self.id}) to central node listening at {host}:{port} : {e}")
+            print(f"Failed to connect from agent node named {self.name} to central node listening at {host}:{port} : {e}")
             if connection is not None:
                 connection.close()   # when agent node side of the connection is closed then the central node side will also close
             return False
@@ -118,7 +123,7 @@ class AgentNode(Node):
         if self.connection is not None:
             self.connection.send(msg)
             return True
-        print(f"Agent node ({self.id}) is not connected to a central node")
+        print(f"Agent node named {self.name} is not connected to a central node")
         return False
 
     
@@ -160,11 +165,11 @@ class AgentNode(Node):
     def stop(self):
         """Stop the agent node activity and close the connection to central node, i.e. 
         disconnect from network."""
-        print(f"Agent node ({str(self.id)}) stopping...")
+        print(f"Agent node named {self.name} stopping...")
 
         self.disconnect_from_central_node()
  
         self.problem_instances_ids = set()
 
-        print(f"Agent node ({self.id}) stopped")
+        print(f"Agent node named {self.name} stopped")
 

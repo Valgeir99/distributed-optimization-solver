@@ -17,11 +17,11 @@ try:
     ## TEST: create central node with illegal port number - should raise exception
     # print("TEST: create central node with illegal port number - should raise exception")
     # try:
-    #     central_node = CentralNode("127.0.0.1", -1, "../database/central_node.db", "1")
+    #     central_node = CentralNode("127.0.0.1", -1, "../database/central_node.db")
     # except Exception as e:
     #     print(e)
 
-    central_node = CentralNode("127.0.0.1", 10000, "../database/central_node.db", "1")
+    central_node = CentralNode("127.0.0.1", 10000, "../database/central_node.db")
     central_node.start()
 
     time.sleep(5)
@@ -35,7 +35,7 @@ try:
 
     # time.sleep(5)
 
-    agent1 = AgentNode("2")
+    agent1 = AgentNode("agent1")
     agent1.start()
 
     time.sleep(5)
@@ -59,7 +59,7 @@ try:
 
     ## TEST: connect to agent from agent - should return False
     print("TEST: connect to agent from agent - should return False")
-    agent2 = AgentNode("3")
+    agent2 = AgentNode("agent2")
     agent2.start()
     time.sleep(5)
     result = agent1.connect_to_central_node("127.0.0.1", 10002)
