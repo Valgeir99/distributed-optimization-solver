@@ -1,5 +1,8 @@
 import sqlite3
 import os
+import sys
+
+from config import SCHEMA_PATH, DATA_PATH
 
 # Function to create a new database after tearing down the old one
 def create_database(db_path):
@@ -12,12 +15,12 @@ def create_database(db_path):
         cursor = connection.cursor()
 
         # Read and execute the SQL schema
-        with open('../database/schema.sql', 'r') as f:
+        with open(SCHEMA_PATH, 'r') as f:
             schema = f.read()
         cursor.executescript(schema)
 
         # Optionally insert initial data
-        with open('../database/data.sql', 'r') as f:
+        with open(DATA_PATH, 'r') as f:
             data_insert = f.read()
         cursor.executescript(data_insert)
 

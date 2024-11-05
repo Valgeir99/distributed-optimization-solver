@@ -5,10 +5,10 @@
 
 -- Create problem_instances table
 CREATE TABLE problem_instances (
-    id TEXT PRIMARY KEY,
+    name TEXT PRIMARY KEY,   -- name of the problem instance is unique (instead of id)
     client_id TEXT NOT NULL,
     description TEXT,
-    instance_file_location TEXT NOT NULL,
+    file_location TEXT NOT NULL,
     reward_accumulated INTEGER DEFAULT 0,
     reward_budget INTEGER NOT NULL
 );
@@ -30,23 +30,23 @@ CREATE TABLE central_nodes (
 -- Create all_solutions table
 CREATE TABLE all_solutions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    problem_instance_id TEXT,
+    problem_instance_name TEXT,
     agent_node_id TEXT,
     submission_time DATETIME NOT NULL,
     objective_value INTEGER NOT NULL,
     reward INTEGER NOT NULL,
-    FOREIGN KEY (problem_instance_id) REFERENCES problem_instances (id),
+    FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
     FOREIGN KEY (agent_node_id) REFERENCES agent_nodes (id)
 );
 
 -- Create best_solutions table
 CREATE TABLE best_solutions (
-    problem_instance_id TEXT PRIMARY KEY,
+    problem_instance_name TEXT PRIMARY KEY,
     solution_id INTEGER,
     solution_file_location TEXT NOT NULL,
     --objective_value INTEGER NOT NULL, -- redundant since it's in all_solutions
     --submission_time DATETIME NOT NULL,
-    FOREIGN KEY (problem_instance_id) REFERENCES problem_instances (id),
+    FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
     FOREIGN KEY (solution_id) REFERENCES all_solutions (id)
 );
 
