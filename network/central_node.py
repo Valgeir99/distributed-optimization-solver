@@ -37,12 +37,14 @@ class CentralNode:
     def __init__(self, web_server: FastAPI):
         """Initialize the central node with a web server and connect to the database."""
 
+        print("Central node started")
+
         self.host = CENTRAL_NODE_HOST
         self.port = CENTRAL_NODE_PORT
 
         # Database
         self.db_path = DB_PATH
-        create_database(self.db_path)
+        create_database(self.db_path)   # TODO: we should not create the database here, we should create it and populate it somewhere else
         self.db_connection = self.__connect_to_database()
         #self.edit_data_in_db("INSERT INTO central_nodes (id, host, port) VALUES (?, ?, ?)", (self.id, self.host, self.port))
 
@@ -107,3 +109,7 @@ class CentralNode:
 
 
 
+    def stop(self):
+        """Stop the central node."""
+        self.__disconnect_from_database()
+        print("Central node stopped")

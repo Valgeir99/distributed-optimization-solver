@@ -10,22 +10,22 @@ CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = os.getenv("CENTRAL_NODE_PORT")
 
 
-# TODO: fix so that agents can only solve single problem instances at a time but actually we should allow agent to store multiple
-# problem instances even though it is only solving one of them at a time (e.g. for validation purposes)
-
-
 class ProblemInstanceInfo(TypedDict):
     """Information about a problem instance that the agent node has stored. Agent stores information 
     the best solution found by itself and the best solution found by the platform in order to be able 
     to compare them and so solver can access them when needed."""
-    id: str
     name: str
     description: str
-    best_platform_obj: int
-    best_self_obj: int
-    file_location: str
-    best_platform_sol_location: str
-    best_self_sol_location: str
+    instance_file_path: str
+    best_platform_obj: int | None
+    best_self_obj: int | None
+    best_platform_sol_path: str | None
+    best_self_sol_path: str | None
+    reward_accumulated: int
+
+    # TODO: maybe don't have this data structure fixed now we might discover that we need to store more information later on
+    # Need to implement you know the solution phase and maybe validation also before
+    # Do we actually want to use flags to indicate if this problme instance is being solved or not? and also if it is being validated or not?
 
 
 class AgentNode:
@@ -47,23 +47,31 @@ class AgentNode:
         # Central node web server endpoints
         self.central_node_host = CENTRAL_NODE_HOST
         self.central_node_port = CENTRAL_NODE_PORT
-        
+
+        # Folder to store all agent data
+        self.agent_data_path = f"../data/agent_data/agent_{self.name}"
+        os.makedirs(self.agent_data_path, exist_ok=True)
 
         # Problem instances
         self.problem_instances_ids: Set[str] = set()  
         self.problem_instances: Dict[str, ProblemInstanceInfo] = dict()   # key is problem instance id and value is a dictionary with problem instance information
-        self.problem_instances_path = f"../problem_instances/agent_{self.name}"
-        self.__create_problem_instance_folder()
+        self.problem_instances_path = f"{self.agent_data_path}/problem_instances"
+        os.makedirs(self.problem_instances_path, exist_ok=True)
 
+        # Problem instance that the agent is solving (for this proof of concept the agent is only solving one problem instance at a time)
+        self.solving_problem_instance_id: str | None = None
+
+        # Best solutions - agent keeps track of the best solutions on the platform (to aid with solving)
+        self.best_platfrom_solutions_path = f"{self.agent_data_path}/best_platform_solutions"
+        os.makedirs(self.best_platfrom_solutions_path, exist_ok=True)
+
+        # Best solutions - agent keeps track of the best solutions found by itself
+        self.best_self_solutions_path = f"{self.agent_data_path}/best_self_solutions"
+        os.makedirs(self.best_self_solutions_path, exist_ok=True)
 
         print(f"Agent node named {self.name} started")
 
-
-
-    def __create_problem_instance_folder(self):
-        """Create a folder for the agent's problem instances."""
-        os.makedirs(self.problem_instances_path, exist_ok=True)
-        
+       
 
     def download_problem_instance(self):
         """Download a problem instance from the central node from a pool of problem instances 
@@ -74,40 +82,89 @@ class AgentNode:
             print(f"Error: {response.status_code} {response.text}")
             return
         problem_instances = response.json()
-        print(problem_instances)
 
         # Select a problem instance from the pool - for now just select the first one
-        problem_instance_id = problem_instances[0]["name"]
-        print(problem_instance_id)
+        problem_instance_name = problem_instances[0]["name"]
 
         # Download the problem instance
-        self.download_problem_instance_by_id(problem_instance_id)
+        self.download_problem_instance_data_by_name(problem_instance_name)
 
     
-    def download_problem_instance_by_id(self, problem_instance_id: str):
-        """Download a problem instance from the central node by its id and save it to local storage."""
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_id}")
+    def download_problem_instance_data_by_name(self, problem_instance_name: str):
+        """Download a problem instance from the central node by its id and save it to local storage.
+        It downloads the problem instance data, including the problem instance file and the best solution file 
+        if it exists."""
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}")
         if response.status_code != 200:
             print(f"Error: {response.status_code} {response.text}")
             return
         problem_instance = response.json()
-        print(problem_instance["name"]) 
 
         # Save the problem instance to local storage
-        with open(f"{self.problem_instances_path}/{problem_instance_id}.mps", "w") as file:
-            file.write(problem_instance["data"])
+        with open(f"{self.problem_instances_path}/{problem_instance_name}.mps", "w") as file:
+            file.write(problem_instance["problem_data"])
 
-        # Add the problem instance to the agent's list of problem instances
-        self.problem_instances_ids.add(problem_instance_id)
+        # Check if there is a solution attached to the problem instance also
+        if problem_instance["solution_data"]:
+            with open(f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol", "w") as file:
+                file.write(problem_instance["solution_data"])
 
         # Add the problem instance information to the agent's dictionary of problem instances
+        # If first time downloading we need to create the dictionary entry then we need 
+        # to create the dictionary entry but otherwise we need to update the dictionary entry
+        # with e.g. new solution data
+        if not problem_instance_name in self.problem_instances_ids:
+            # Add the problem instance to the agent's set of problem instances
+            self.problem_instances_ids.add(problem_instance_name)
+            # Initialize the problem instance information dictionary
+            self.problem_instances[problem_instance_name] = {
+                "name": problem_instance_name,
+                "description": problem_instance["description"],
+                "instance_file_path": f"{self.problem_instances_path}/{problem_instance_name}.mps",
+                "best_platform_obj": None,
+                "best_self_obj": None,
+                "best_platform_sol_path": None,
+                "best_self_sol_path": None,
+                "reward_accumulated": 0
+            }
+        else:
+            # Update the problem instance information dictionary
+            if problem_instance["solution_data"]:
+                self.problem_instances[problem_instance_name]["best_platform_sol_path"] = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
+            
 
-  
+    def download_best_solution(self, problem_instance_name: str):
+        """Download the best solution for a problem instance from the central node and save it to local storage."""
+        pass
+
+
+    def submit_solution(self, problem_instance_name: str, solution: str):
+        """Submit a solution to the central node."""
+        pass
+
+
+    def check_submit_solution_status(self, solution_submission_id: str):
+        """Check the status of a solution submission with the central node."""
+
+        # Remove from agent's list of solutions that he is waiting on submission status for
+        pass
+
+
+    def validate_solution(self, problem_instance_name: str, solution: str):
+        """Validate a solution with the central node."""
+        # Request a solution to validate from the central node
+        pass
+
+
+    def print_problem_instances(self):
+        """Print the problem instances that the agent has stored."""
+        print("Problem instances stored by agent:")
+        print(self.problem_instances)
     
 
     def clean_up(self):
         """Clean up the agent node."""
-        # Delete the problem instances folder
-        shutil.rmtree(self.problem_instances_path)
+        # Delete the agent data folder
+        shutil.rmtree(self.agent_data_path)
 
         print(f"Agent node named {self.name} cleaned up")
