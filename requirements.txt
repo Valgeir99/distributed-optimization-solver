@@ -37,6 +37,10 @@ idna==3.10
     # via
     #   anyio
     #   httpx
+numpy==2.1.3
+    # via -r requirements.in
+pulp==2.9.0
+    # via -r requirements.in
 pydantic==2.9.2
     # via fastapi
 pydantic-core==2.23.4
