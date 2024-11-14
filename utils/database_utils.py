@@ -2,6 +2,8 @@ import sqlite3
 import os
 import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import SCHEMA_PATH, DATA_PATH
 
 # Function to create a new database after tearing down the old one
