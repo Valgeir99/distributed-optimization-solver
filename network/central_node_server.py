@@ -158,6 +158,22 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
     )
 
 
+# TODO
+# @app.get("/problem_instances/active", response_model=list[ProblemInstanceResponse])
+# def check_problem_instance_status(problem_instance_name: str) -> bool:
+#     """Check if the problem instance is active."""
+#     result = central_node.query_db(
+#         "SELECT active FROM problem_instances WHERE name = ?", (problem_instance_name,)
+#     )
+#     if result is None:
+#         # Database error
+#         raise HTTPException(status_code=500, detail="Internal server error")
+#     if not result:
+#         # No problem instance found
+#         raise HTTPException(status_code=404, detail="Problem instance not found!")
+#     return result[0]["active"]
+
+
 @app.post("/solutions/upload/{problem_instance_name}", response_model=SolutionSubmissionResponse)
 async def upload_solution(problem_instance_name: str, solution: SolutionSubmissionRequest) -> SolutionSubmissionResponse:
     """Agent uploads a solution to a problem instance to the platform - the solution will be available for validation 
@@ -184,7 +200,7 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
     central_node.start_solution_validation_phase(problem_instance_name, solution_submission_id, solution.solution_data, solution.objective_value)
 
     # DEBUG - print the active solution submissions
-    print("active solution submissions after upload new solution", central_node.active_solution_submissions)
+    #print("active solution submissions after upload new solution", central_node.active_solution_submissions)
 
     # Get solution submission data from the database
     result = central_node.query_db(
@@ -345,7 +361,7 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
         solution_submission["reward_accumulated"] += SOLUTION_VALIDATION_REWARD
 
     # DEBUG: print the active solution submissions
-    print("active solution submissions after validation", central_node.active_solution_submissions)
+    #print("active solution submissions after validation", central_node.active_solution_submissions)
 
     return SolutionValidationResponse(reward=SOLUTION_VALIDATION_REWARD)
     

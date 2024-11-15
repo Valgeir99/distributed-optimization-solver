@@ -1,9 +1,11 @@
 from typing import Set, Dict, TypedDict, Tuple
 
+import threading
 import httpx
 import shutil
 import os
 from dotenv import load_dotenv
+import solver.solver_python as solver
 
 load_dotenv()
 CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
@@ -20,7 +22,7 @@ class ProblemInstanceInfo(TypedDict):
     best_platform_obj: float | None
     best_self_obj: float | None
     best_platform_sol_path: str | None
-    best_self_sol_path: str | None
+    best_self_sol_path: str
     reward_accumulated: int
     active_solution_submission_ids: Set[str]  # Set of solution submission ids that the agent is waiting for submission status for
 
@@ -132,7 +134,7 @@ class AgentNode:
                 "best_platform_obj": None,
                 "best_self_obj": None,
                 "best_platform_sol_path": None,
-                "best_self_sol_path": None,
+                "best_self_sol_path": f"{self.best_self_solutions_path}/{problem_instance_name}.sol",
                 "reward_accumulated": 0,
                 "active_solution_submission_ids": set()
             }
@@ -140,6 +142,17 @@ class AgentNode:
             # Update the problem instance information dictionary
             if problem_instance["solution_data"]:
                 self.problem_instances[problem_instance_name]["best_platform_sol_path"] = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
+
+
+    # TODO
+    # def check_problem_instance_status(self, problem_instance_name: str):
+    #     """Check the status of a problem instance with the central node to see if it is still active or not."""
+    #     response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/status/{problem_instance_name}")
+    #     if response.status_code != 200:
+    #         print(f"Error: {response.status_code} {response.text}")
+    #         return
+    #     problem_instance_info = response.json()
+    #     print(problem_instance_info)
             
 
     def download_best_solution(self, problem_instance_name: str):
@@ -236,20 +249,94 @@ class AgentNode:
     def validate_solution(self, problem_instance_name: str, solution: str) -> Tuple[bool, float]:
         """Validate a solution."""
 
-        obj_value = 109.8
-
         if self.malicous:
             # Malicious agent - always return False
-            return False, obj_value
+            return False, -1
         
-        # TODO: for now just so we can test the api endpoints we will always return True if not malicous - need to implement the validation!
-        return True, obj_value
+        accepted, obj_value = solver.validate_bip(self.problem_instances[problem_instance_name]["instance_file_path"], solution)
+        return accepted, obj_value
 
-        # Validate the solution - read the solution file using the solver?
-        # Check if file on correct format (.sol file) and as we have defined according to miplib sol file format
-        #solver.
 
-    
+    def read_sol_file(self, sol_file_path: str) -> Tuple[bool, float]:
+        """Read a .sol file and return the objective value and if the solution is feasible or not."""
+        pass
+
+    # TODO: we want the solver to be a modular piece that can be easily replaced with another solver - so to have it like that 
+    # we cannot have any return values or anything like that since we need to run it in different thread/process so I guess we would 
+    # always need to either pass in mutable objects that we would change during the solving process and use that (like dict with fields for 
+    # the objective and if the solution was found). We could have a python wrapper for all solvers that we want to use and then we can just call the wrapper function?
+    # That is a good idea but still we would always need to call the wrapper in a seperate thread or process so that we can run it 
+    # in parallel with the agent node. If we do wrapper and have e.g. process inside the wrapper that runs a C solver then we would still 
+    # need to have like a file writing mechanism I guess to get the solution back to the agent node...?
+
+        
+
+    # NOTE: this function should preferably be run on a seperate thread I think (but we cannot run it as a seperate process since we need to share the data with the agent node)
+    # However, the solver itself should be able to run as a seperate process since it is a seperate program (becasue we want to be able to use different solvers, even 
+    # C solver or commercial solver that we cannot run in the same process as the agent node)
+    def solve_problem_instance(self, problem_instance_name: str):
+        """Solve a problem instance that the agent has stored. The agent will solve the problem instance 
+        in a seperate thread or process so that it can continue to run its event loop and communicate with the central node.
+        TODO should we then have the requirement to call this function in a seperate thread or process?"""
+
+        # Check if the agent is already solving a problem instance
+        if self.solving_problem_instance_name:
+            print(f"Error: Agent is already solving problem instance {self.solving_problem_instance_name}")
+            return
+
+        # Check if the agent has the problem instance stored
+        if not problem_instance_name in self.problem_instances_ids:
+            print(f"Error: Agent does not have problem instance {problem_instance_name} stored")
+            return
+        
+        # Set the problem instance that the agent is solving
+        self.solving_problem_instance_name = problem_instance_name
+
+        # Solve the problem instance - loop until some stopping criterion is met? TODO
+
+        # Generate a solution using a solver - we can run the solver on a seperate thread or process if we want 
+        try:
+            # This takes a long time so we should run it on a seperate thread or process
+            #solution_thread = threading.Thread(target=solver.solve_bip, args=(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"]))
+            #solution_thread.start()
+            sol_found, solution_data, obj = solver.solve_bip(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_self_sol_path")
+        except ValueError as e:
+            # Not binary integer problem
+            print(f"Error: {e}")
+            return   # TODO: do something
+
+        # If found a solution...
+        if sol_found:
+
+            # Read solution from file that the solver has written
+            # with open(self.problem_instances[problem_instance_name]["best_self_sol_path"], "r") as file:
+            #     solution_data = file.read()
+
+            # Submit the solution on the platform if it is the best solution found by the agent (send request to central node)
+            self.submit_solution(problem_instance_name, solution_data, obj)
+
+            # Update the agent's best solution
+            self.problem_instances[problem_instance_name]["best_self_obj"] = obj
+
+        
+        # After loop is done, set the solving problem instance to None
+        self.solving_problem_instance_name = None
+
+
+
+
+        # Not sure what we will do here exactly...
+        # It should be generic enough so that I can maybe easily use different solvers
+        # Maybe I will start with a python solver that is just a script (or maybe a class) that
+        # solves it (not sure if I want to have there or here to check if the solution is best in network or 
+        # not but that functionality should be easy to add later on)
+        # I will definitely run it on a seperate thread but maybe even as a seperate process
+
+
+    def stop_solving_problem_instance(self):
+        """Stop solving the problem instance that the agent is currently solving."""
+        # TODO: need to implement some way to stop the solver - maybe have a event or signal that the solver listens to?
+        pass
 
 
     ## Agent helper functions ##

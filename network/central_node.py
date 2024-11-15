@@ -249,7 +249,7 @@ class CentralNode:
             # Update the best solution in the database (or insert if it does not exist)
             self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", (problem_instance_name, solution_submission_id, solution_file_location))
 
-        print("solution_submission in finalize after validation", solution_submission)
+        #print("solution_submission in finalize after validation", solution_submission)
 
         # Insert to db accumulated reward given for this solution submission, objective value and if it was accepted or not
         self.edit_data_in_db("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ? WHERE id = ?", (solution_submission["reward_accumulated"], objective_value, accepted, solution_submission_id))
