@@ -18,6 +18,10 @@ load_dotenv()
 SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCECCFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
 SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
 
+# Other constants
+RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose from when selecting a problem instance for an agent
+
+
 
 # Create FastAPI application and put it in the central node class
 app = FastAPI()
@@ -39,10 +43,13 @@ def start_server():
 
 def stop_server():
     """Stop the server gracefully."""
+    # Save the database
+    central_node.save_db()
+    # Stop the central node
     central_node.stop()
     if server and server.should_exit is False:
         server.should_exit = True
-        print("Central node server stopped")
+    print("Central node server stopped")
 
 
 ## Dataclasses for the messages - agents need to follow these schemas when sending requests / receiving responses
@@ -83,9 +90,8 @@ class SolutionValidationRequest(BaseModel):
 @app.get("/problem_instances/info", response_model=list[ProblemInstanceResponse])
 async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
     """Agent requests information about a pool of problem instances."""
-    # Get 10 random problem instances from the database
-    pool_size = 10   # TODO: use a constant for this (define somewhere else)
-    problem_instances = central_node.query_db("SELECT * FROM problem_instances WHERE active = TRUE ORDER BY RANDOM() LIMIT ?", (pool_size,))
+    # Get a pool of random problem instances from the database
+    problem_instances = central_node.query_db("SELECT * FROM problem_instances WHERE active = TRUE ORDER BY RANDOM() LIMIT ?", (RANDOM_PROBLEM_INSTANCE_POOL_SIZE,))
     
     if problem_instances is None:
         # Database error
@@ -93,11 +99,6 @@ async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
     if not problem_instances:
         # No problem instances in the database
         raise HTTPException(status_code=404, detail="No problem instances available on the central node!")
-
-    # problem_instances_info = [
-    #     {"name": instance["name"], "description": instance["description"]}
-    #     for instance in problem_instances
-    # ]
     
     return [ProblemInstanceResponse(
         name=instance["name"],
@@ -127,8 +128,11 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
     # Get problem instance data from file storage
     problem_data = None
     if os.path.exists(problem_instance["file_location"]):
-        with open(problem_instance["file_location"], "r") as file:
-            problem_data = file.read()
+        try:
+            with open(problem_instance["file_location"], "r") as file:
+                problem_data = file.read()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="Internal server error")
     if problem_data is None:
         # File not found
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -147,8 +151,11 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
         solution_location = result[0]["file_location"]
         # Get problem instance solution from file storage
         if os.path.exists(solution_location):
-            with open(solution_location, "r") as file:
-                solution_data = file.read()
+            try:
+                with open(solution_location, "r") as file:
+                    solution_data = file.read()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail="Internal server error")
 
     return ProblemInstanceResponse(
         name=problem_instance["name"],
@@ -294,6 +301,7 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
 
     # Get the oldest active solution submission for the problem instance - TODO: this might be bad if we always give out solutions that are running out of time 
     # and then the agents might not even have time to validate them... Could maybe take oldest one that has more than x time left or something like that?
+    # Also don't want to give out solutions that this agent has already validated...
     result = central_node.query_db(
         "SELECT id FROM all_solutions WHERE problem_instance_name = ? AND accepted IS NULL ORDER BY submission_time ASC LIMIT 1", (problem_instance_name,)
     )
@@ -323,7 +331,7 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
 
 
 # NOTE: there is nothing preventing agents to validate the same solution multiple times... (but I guess we don't 
-# care about that in proof of concept)
+# care about that in proof of concept TODO yes I think we should try to fix and also prevent agent who submitted the solution to validate it)
 # NOTE: Here we need to use solution submission id since we could have many solution submissions for the same problem instance
 @app.post("/solutions/validate/{solution_submission_id}", response_model=SolutionValidationResponse)
 async def validate_solution(solution_submission_id: str, solution_validation_result: SolutionValidationRequest) -> SolutionValidationResponse:

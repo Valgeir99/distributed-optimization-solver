@@ -4,3 +4,4 @@ httpx
 python-dotenv
 pulp
 numpy
+schedule

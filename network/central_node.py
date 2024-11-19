@@ -12,6 +12,7 @@ import uuid
 from utils.database_utils import create_database, teardown_database
 from config import DB_PATH, BEST_SOLUTIONS_DIR
 
+# Load environment variables from .env file
 load_dotenv()
 CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = int(os.getenv("CENTRAL_NODE_PORT"))
@@ -142,7 +143,21 @@ class CentralNode:
         except sqlite3.Error as e:
             self.db_connection.rollback()
             raise sqlite3.Error(f"Error while editing data in database at {self.db_path}: {e}")
+
+
+    def save_db(self):
+        """Save the working database to a file with a timestamp."""
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_db_path = f"{self.db_path}_{timestamp}"
+        try:
+            with open(self.db_path, "rb") as f:
+                with open(backup_db_path, "wb") as f2:
+                    f2.write(f.read())
+            print(f"Database saved to {backup_db_path}")
+        except Exception as e:
+            print(f"Error while saving database: {e}")
             
+
     def generate_id(self):
         """Generate a unique id for solution submissions."""
         return str(uuid.uuid4())
@@ -150,9 +165,6 @@ class CentralNode:
 
     def start_solution_validation_phase(self, problem_instance_name: str, solution_submission_id: str, solution_data: str, objective_value: float):
         """Start the solution validation phase with a time limit for a solution submission."""
-        # Should we check if the solution file is on correct format or? Or just let agents reject it if it is not? TODO: but yes 
-        # to keep minimal role of central node we should not do that here and let agents do that
-
         submission_time = datetime.now()
         validation_end_time = submission_time + timedelta(seconds=SOLUTION_VALIDATION_DURATION)
 
@@ -162,8 +174,8 @@ class CentralNode:
             (solution_submission_id, problem_instance_name, submission_time, validation_end_time)
         )
         
-        # Start a background thread for this solution submission validation
-        validation_thread = threading.Thread(target=self._manage_validation_phase, args=(solution_submission_id, validation_end_time))
+        # Start a background thread for this solution submission validation - we use daemon threads so that this thread does not continue to run after the main thread (central node server) has finished
+        validation_thread = threading.Thread(target=self._manage_validation_phase, args=(solution_submission_id, validation_end_time), daemon=True)
         validation_thread.start()
 
         # Store the validation phase information for this solution submission in memory for quick access and short-term storage
@@ -238,10 +250,12 @@ class CentralNode:
             print("Solution submission accepted")
             # Save solution data to file storage with best solutions
             solution_file_location = f"{self.best_solutions_folder}/{problem_instance_name}.sol"
-            with open(solution_file_location, "w") as f:
-                f.write(solution_submission["solution_data"])
-
-            print("Solution file saved to:", solution_file_location)
+            try:
+                with open(solution_file_location, "w") as f:   # will create the file if it does not exist
+                    f.write(solution_submission["solution_data"])
+                print("Solution file saved to:", solution_file_location)
+            except Exception as e:
+                print(f"Error while central node was saving best solution file: {e}")
 
             # "Give" reward to the agent who submitted the solution
             solution_submission["reward_accumulated"] += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD   # we don't implement proper reward mechanism just emulating it by adding to the reward given for this solution submission
@@ -279,3 +293,7 @@ class CentralNode:
         self.__disconnect_from_database()
         # TODO: possibly delete some folders
         print("Central node stopped")
+         # Print the active solution submissions
+        print("Active solution submissions after stopping central node:")
+        for solution_submission_id in self.active_solution_submissions:
+            print(solution_submission_id)

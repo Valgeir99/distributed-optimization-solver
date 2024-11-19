@@ -1,15 +1,20 @@
 from typing import Set, Dict, TypedDict, Tuple
 
-import threading
 import httpx
 import shutil
 import os
+import random
 from dotenv import load_dotenv
+from config import AGENT_DATA_DIR
 import solver.solver_python as solver
 
+# Load environment variables from .env file
 load_dotenv()
 CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = os.getenv("CENTRAL_NODE_PORT")
+
+# Other constants
+SOLVE_ITERATIONS = 3   # number of times to run the solver for each problem instance when solving
 
 
 class ProblemInstanceInfo(TypedDict):
@@ -55,7 +60,7 @@ class AgentNode:
         self.central_node_port = CENTRAL_NODE_PORT
 
         # Folder to store all agent data
-        self.agent_data_path = f"../data/agent_data/agent_{self.name}"
+        self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.name}"
         os.makedirs(self.agent_data_path, exist_ok=True)
 
         # Problem instances
@@ -64,7 +69,7 @@ class AgentNode:
         self.problem_instances_path = f"{self.agent_data_path}/problem_instances"
         os.makedirs(self.problem_instances_path, exist_ok=True)
 
-        # Problem instance that the agent is solving (for this proof of concept the agent is only solving one problem instance at a time)
+        # Problem instance that the agent is solving (for this proof of concept the agent is only solving one problem instance at a time) - if None then the agent is not solving any problem instance
         self.solving_problem_instance_name: str | None = None
 
         # Best solutions - agent keeps track of the best solutions on the platform (to aid with solving)
@@ -83,41 +88,66 @@ class AgentNode:
     
     ## Request functions to communicate with central node server ##
 
-    def download_problem_instance(self):
+    def download_problem_instance(self) -> str:
         """Download a problem instance from the central node from a pool of problem instances 
-        offerd by the central node and save it in local storage."""
+        offerd by the central node and save it in local storage. Agent uses random selection.
+        Returns:
+            problem_instance_name: The name of the problem instance that was downloaded | None if no problem instance was downloaded
+        """
         # Get pool of problem instances
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/info")
         if response.status_code != 200:
             print(f"Error: {response.status_code} {response.text}")
             return
-        problem_instances = response.json()
+        problem_instances = response.json()   # list of problem instances
 
-        # Select a problem instance from the pool - for now just select the first one
-        problem_instance_name = problem_instances[0]["name"]
+        # Select a problem instance from the pool - select random one agent does not have stored yet
+        problem_instance_name = None
+        for problem_instance in random.sample(problem_instances, len(problem_instances)):
+            if not problem_instance["name"] in self.problem_instances_ids:
+                problem_instance_name = problem_instance["name"]
+                break
+        
+        if problem_instance_name is None:
+            print("No problem instance downloaded")
+        else:     
+            # Download the problem instance
+            self.download_problem_instance_data_by_name(problem_instance_name)
 
-        # Download the problem instance
-        self.download_problem_instance_data_by_name(problem_instance_name)
+        return problem_instance_name
 
     
-    def download_problem_instance_data_by_name(self, problem_instance_name: str):
+    def download_problem_instance_data_by_name(self, problem_instance_name: str) -> bool:
         """Download a problem instance from the central node by its id and save it to local storage.
         It downloads the problem instance data, including the problem instance file and the best solution file 
-        if it exists."""
+        if it exists.
+        Args:
+            problem_instance_name: The name of the problem instance to download
+        Returns:
+            bool: True if the problem instance was downloaded successfully, False if not
+        """
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}")
         if response.status_code != 200:
             print(f"Error: {response.status_code} {response.text}")
-            return
+            return False
         problem_instance = response.json()
 
         # Save the problem instance to local storage
-        with open(f"{self.problem_instances_path}/{problem_instance_name}.mps", "w") as file:
-            file.write(problem_instance["problem_data"])
+        try:
+            with open(f"{self.problem_instances_path}/{problem_instance_name}.mps", "w") as file:
+                file.write(problem_instance["problem_data"])
+        except Exception as e:
+            print(f"Error: {e}")
+            return False
 
         # Check if there is a solution attached to the problem instance also
-        if problem_instance["solution_data"]:
-            with open(f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol", "w") as file:
-                file.write(problem_instance["solution_data"])
+        try:
+            if problem_instance["solution_data"]:
+                with open(f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol", "w") as file:
+                    file.write(problem_instance["solution_data"])
+        except Exception as e:
+            print(f"Error: {e}")
+            return False
 
         # Add the problem instance information to the agent's dictionary of problem instances
         # If first time downloading we need to create the dictionary entry then we need 
@@ -142,6 +172,8 @@ class AgentNode:
             # Update the problem instance information dictionary
             if problem_instance["solution_data"]:
                 self.problem_instances[problem_instance_name]["best_platform_sol_path"] = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
+
+        return True
 
 
     # TODO
@@ -181,7 +213,6 @@ class AgentNode:
             print(f"Error: {response.status_code} {response.text}")
             return
         solution_submission_info = response.json()
-        print(solution_submission_info)
 
         # If the solution submission is validated (accepted or rejected), update the reward he has accumulated for this problem instance 
         # and remove it from the agent's list of active solution submissions
@@ -205,7 +236,10 @@ class AgentNode:
 
     def validate_solution_request(self, problem_instance_name: str):
         """Validate a solution with the central node. The agent must have the problem instance stored in order to validate the solution.
-        The agent will download the solution from the central node (get request), validate it and send result to central node (post request)."""
+        The agent will download the solution from the central node (get request), validate it and send result to central node (post request).
+        Args:
+            problem_instance_name: The name of the problem instance that the solution belongs to
+        """
 
         # Check if agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
@@ -292,31 +326,39 @@ class AgentNode:
         # Set the problem instance that the agent is solving
         self.solving_problem_instance_name = problem_instance_name
 
-        # Solve the problem instance - loop until some stopping criterion is met? TODO
+        # Solve the problem instance - loop until some stopping criterion is met? TODO: now I just solve it x times but we should also definately check problem instance 
+        # status to see if it is still active or not before we start solving it every time
 
-        # Generate a solution using a solver - we can run the solver on a seperate thread or process if we want 
-        try:
-            # This takes a long time so we should run it on a seperate thread or process
-            #solution_thread = threading.Thread(target=solver.solve_bip, args=(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"]))
-            #solution_thread.start()
-            sol_found, solution_data, obj = solver.solve_bip(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_self_sol_path")
-        except ValueError as e:
-            # Not binary integer problem
-            print(f"Error: {e}")
-            return   # TODO: do something
+        for _ in range(SOLVE_ITERATIONS):
 
-        # If found a solution...
-        if sol_found:
+            # Check if the problem instance is still active on the platform
+            # TODO: need to first implement http endpoint for this in the central node (check_problem_instance_status)
 
-            # Read solution from file that the solver has written
-            # with open(self.problem_instances[problem_instance_name]["best_self_sol_path"], "r") as file:
-            #     solution_data = file.read()
+            # Generate a solution using a solver - we can run the solver on a seperate thread or process if we want 
+            try:
+                # This takes a long time so we should run it on a seperate thread or process
+                #solution_thread = threading.Thread(target=solver.solve_bip, args=(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"]))
+                #solution_thread.start()
+                sol_found, solution_data, obj = solver.solve_bip(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_self_sol_path")
+            except ValueError as e:
+                # Not binary integer problem
+                print(f"Error: {e}")
+                return   # TODO: do something
 
-            # Submit the solution on the platform if it is the best solution found by the agent (send request to central node)
-            self.submit_solution(problem_instance_name, solution_data, obj)
+            # If found a solution...
+            if sol_found:
 
-            # Update the agent's best solution
-            self.problem_instances[problem_instance_name]["best_self_obj"] = obj
+                # Read solution from file that the solver has written   TODO: maybe we do this instead of returning the solution data from the solver?
+                # with open(self.problem_instances[problem_instance_name]["best_self_sol_path"], "r") as file:
+                #     solution_data = file.read()
+
+                # Submit the solution on the platform if it is the best solution found by the agent (send request to central node)
+                self.submit_solution(problem_instance_name, solution_data, obj)
+
+                # Update the agent's best solution
+                self.problem_instances[problem_instance_name]["best_self_obj"] = obj
+
+                # TODO: would also make sense to save to file here but I think I already did that in the solver so maybe we should change that for consistency!
 
         
         # After loop is done, set the solving problem instance to None
@@ -352,12 +394,10 @@ class AgentNode:
         # Delete the agent data folder
         shutil.rmtree(self.agent_data_path)
 
+        # Log some agent information TODO: need to implement logging and make sure this log file is not in the agent data folder
+        for problem_instance_name in self.problem_instances_ids:
+            print(f"Agent node {self.name} accumulated reward for problem instance {problem_instance_name}: {self.problem_instances[problem_instance_name]['reward_accumulated']}")
+            print(f"Agent node {self.name} best solution for problem instance {problem_instance_name}: {self.problem_instances[problem_instance_name]['best_self_obj']}")
+
         print(f"Agent node named {self.name} cleaned up")
 
-
-
-    ## Agent event loop ##
-
-    def run(self):
-        """Run the agent node event loop."""
-        pass
