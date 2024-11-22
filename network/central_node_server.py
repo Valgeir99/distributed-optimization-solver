@@ -9,6 +9,7 @@ from pydantic import BaseModel
 import uvicorn
 import threading
 import os
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from .central_node import CentralNode
@@ -73,7 +74,7 @@ class SolutionSubmissionResponse(BaseModel):
     reward: int | None = None   # optional field - reward for the agent who submitted the solution
 
 class SolutionDataResponse(BaseModel):
-    solution_submission_id: str
+    solution_submission_id: str | None = None   # optional field - only used when downloading a solution to validate
     problem_instance_name: str
     solution_data: str
 
@@ -272,18 +273,54 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
         )
     
 
-# TODO: can we use the same response model for this endpoint and download solution to validate it?
 @app.get("/solutions/best/download/{problem_instance_name}", response_model=SolutionDataResponse)
 async def download_best_solution(problem_instance_name: str):
     """Agent requests to download the best solution for a specific problem instance."""
-    pass
+
+    # Check if problem instance exists
+    result = central_node.query_db(
+        "SELECT * FROM problem_instances WHERE name = ?", (problem_instance_name,)
+    )
+    if result is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result:
+        # No problem instance found
+        raise HTTPException(status_code=404, detail="Problem instance not found!")
+    
+    # Get the best solution for the problem instance
+    result = central_node.query_db(
+        "SELECT file_location FROM best_solutions WHERE problem_instance_name = ?", (problem_instance_name,)
+    )
+    if result is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result:
+        # No best solution found
+        raise HTTPException(status_code=404, detail="No best solution found for the problem instance!")
+    best_solution_location = result[0]["file_location"]
+
+    # Get best solution data from file storage
+    if os.path.exists(best_solution_location):
+        try:
+            with open(best_solution_location, "r") as file:
+                best_solution_data = file.read()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="Internal server error")
+    else:
+        # File not found
+        raise HTTPException(status_code=404, detail="File containing best solution not found!")
+    
+    return SolutionDataResponse(
+        problem_instance_name=problem_instance_name,
+        solution_data=best_solution_data
+    )
 
 
 @app.get("/solutions/validate/download/{problem_instance_name}", response_model=SolutionDataResponse)
 async def download_solution_by_problem_instance_id(problem_instance_name: str):
     """Agent requests to download a solution to a specific problem instance (to validate it).
-    Central node will return the oldest active solution submission for the problem instance if exists."""
-    # Select the oldest active solution submission for the problem instance TODO: might change that later
+    Central node will return the oldest active solution submission that has more than 30 seconds left for validation."""
 
     # Check if problem instance exists
     result = central_node.query_db(
@@ -299,11 +336,17 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
         # Problem instance is not active
         raise HTTPException(status_code=404, detail="Problem instance is not active!")
 
-    # Get the oldest active solution submission for the problem instance - TODO: this might be bad if we always give out solutions that are running out of time 
-    # and then the agents might not even have time to validate them... Could maybe take oldest one that has more than x time left or something like that?
-    # Also don't want to give out solutions that this agent has already validated...
+    # Get the oldest active solution submission for the problem instance that has more than 30 seconds left for validation
+    # TODO: Also don't want to give out solutions that this agent has already validated...
+    cutoff_time = datetime.now() + timedelta(seconds=5)
     result = central_node.query_db(
-        "SELECT id FROM all_solutions WHERE problem_instance_name = ? AND accepted IS NULL ORDER BY submission_time ASC LIMIT 1", (problem_instance_name,)
+        """SELECT id FROM all_solutions 
+            WHERE problem_instance_name = ? 
+                AND accepted IS NULL 
+                AND validation_end_time >= ?
+            ORDER BY submission_time ASC LIMIT 1
+        """
+        , (problem_instance_name, cutoff_time)
     )
     if result is None:
         # Database error
@@ -312,6 +355,8 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
         # No active solution submission found
         raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!")
     solution_submission_id = result[0]["id"]
+
+    print("There is something in the database", solution_submission_id)
 
     # Get solution data from in memory data structure
     solution_submission = central_node.active_solution_submissions.get(solution_submission_id)

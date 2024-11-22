@@ -15,7 +15,7 @@ CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = os.getenv("CENTRAL_NODE_PORT")
 
 # Other constants
-SOLVE_ITERATIONS = 3   # number of times to run the solver for each problem instance when solving
+SOLVE_ITERATIONS = 1   # number of times to run the solver for each problem instance when solving
 
 
 class ProblemInstanceInfo(TypedDict):
@@ -161,20 +161,26 @@ class AgentNode:
         problem_instance = response.json()
 
         # Save the problem instance to local storage
+        problem_instance_file_path = f"{self.problem_instances_path}/{problem_instance_name}.mps"
         try:
-            with open(f"{self.problem_instances_path}/{problem_instance_name}.mps", "w") as file:
+            with open(problem_instance_file_path, "w") as file:
                 file.write(problem_instance["problem_data"])
         except Exception as e:
             print(f"Error when saving problem instance to local storage: {e}")
             return
 
         # Check if there is a solution attached to the problem instance also
+        best_platform_sol_path = None
+        best_platform_obj = None
         try:
             if problem_instance["solution_data"]:
-                with open(f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol", "w") as file:
+                best_platform_sol_path = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
+                with open(best_platform_sol_path, "w") as file:
                     file.write(problem_instance["solution_data"])
+                # Get the objective value of the best solution
+                best_platform_obj = solver.get_objective_value_bip_solution(f"{self.problem_instances_path}/{problem_instance_name}.mps", best_platform_sol_path)
         except Exception as e:
-            print(f"Error when saving problem instance best solution to local storage: {e}")
+            print(f"Error when saving problem instance best solution to local storage and calculating objective: {e}")
             return
 
         # Add the problem instance information to the agent's dictionary of problem instances
@@ -189,19 +195,20 @@ class AgentNode:
                 "name": problem_instance_name,
                 "description": problem_instance["description"],
                 "instance_file_path": f"{self.problem_instances_path}/{problem_instance_name}.mps",
-                "best_platform_obj": None,
+                "best_platform_obj": best_platform_obj,
                 "best_self_obj": None,
-                "best_platform_sol_path": None,
-                "best_self_sol_path": f"{self.best_self_solutions_path}/{problem_instance_name}.sol",
+                "best_platform_sol_path": best_platform_sol_path,
+                "best_self_sol_path": f"{self.best_self_solutions_path}/{problem_instance_name}.sol",   # NOTE: it does not exits yet but this is the path where the agent will save the best solution found by itself
                 "reward_accumulated": 0,
                 "active_solution_submission_ids": set()
             }
+            self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully for the first time!")
         else:
-            # Update the problem instance information dictionary
+            # Update the problem instance information dictionary - only update if solution data came with the download
             if problem_instance["solution_data"]:
-                self.problem_instances[problem_instance_name]["best_platform_sol_path"] = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
-
-        self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully")
+                self.problem_instances[problem_instance_name]["best_platform_sol_path"] = best_platform_sol_path
+                self.problem_instances[problem_instance_name]["best_platform_obj"] = best_platform_obj
+            self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully (this problem instance was already stored by the agent)")
 
 
     # TODO
@@ -217,8 +224,34 @@ class AgentNode:
 
     def download_best_solution(self, problem_instance_name: str):
         """Download the best solution for a problem instance from the central node and save it to local storage."""
-        pass
+        self.logger.info(f"Request to download best solution for problem instance {problem_instance_name}...")
 
+        # Check if the agent has the problem instance stored
+        if not problem_instance_name in self.problem_instances_ids:
+            self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
+            return
+        
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/best/download/{problem_instance_name}")
+        if response.status_code != 200:
+            self.logger.error(f"Failed to download best solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
+            return
+        best_solution = response.json()
+
+        # Save the best solution to local storage
+        try:
+            with open(self.problem_instances[problem_instance_name]["best_platform_sol_path"], "w") as file:
+                file.write(best_solution["solution_data"])
+        except Exception as e:
+            self.logger.error(f"Error when saving best solution to local storage: {e}")
+            return
+
+        # Calculate the objective value of the best solution
+        best_obj = solver.get_objective_value_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_platform_sol_path"])
+        
+        # Update the problem instance information dictionary with the new best solution
+        self.problem_instances[problem_instance_name]["best_platform_obj"] = best_obj
+
+        self.logger.info(f"Best solution for problem instance {problem_instance_name} downloaded successfully with objective value {best_obj}")
 
 
     def submit_solution(self, problem_instance_name: str, solution_data: str, objective_value: float):
@@ -285,7 +318,8 @@ class AgentNode:
             return
         solution = response.json()
 
-        # Validate the solution and calculate the objective value
+        # Validate the solution and calculate the objective value - first download best solution from central node (this is agent implementation decision)
+        self.download_best_solution(problem_instance_name)
         solution_data = solution["solution_data"]
         validation_result, objective_value = self.validate_solution(problem_instance_name, solution_data)
         self.logger.info(f"Solution validation result: accepted={validation_result}")
@@ -315,8 +349,17 @@ class AgentNode:
     ## Agent functions ##
 
     
-    def validate_solution(self, problem_instance_name: str, solution: str) -> Tuple[bool, float]:
-        """Validate a solution."""
+    def validate_solution(self, problem_instance_name: str, solution_data: str) -> Tuple[bool, float]:
+        """Validate a solution. Solution needs to be feasible and better than the best known solution (best known 
+        to the agent node).
+        
+        Args:
+            problem_instance_name: The name of the problem instance that the solution belongs to
+            solution_data: The solution data to validate in string format
+        Returns:
+            valid: True if the solution is valid, False otherwise
+            obj_value: The objective value of the solution if it is valid, -1 otherwise
+        """
         self.logger.info("Starting to validate solution...")
         if self.malicous:
             # Malicious agent - always return False
@@ -324,17 +367,20 @@ class AgentNode:
             return False, -1
         
         try:
-            accepted, obj_value = solver.validate_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], solution)
+            feasible, obj_value = solver.validate_feasibility_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], solution_data)
+            if feasible:
+                # Compare the objective value with the agent's best known solution - NOTE: ASSUME ONLY MINIMIZATION PROBLEMS
+                if self.problem_instances[problem_instance_name]["best_self_obj"] is None or obj_value < self.problem_instances[problem_instance_name]["best_self_obj"]:
+                    return True, obj_value
+                else:
+                    return False, -1
+            else:
+                return False, -1
         except Exception as e:
             self.logger.error(f"Error when validating solution: {e}")
-            return False, -1
-        
-        return accepted, obj_value
+            return False, -1        
 
 
-    def read_sol_file(self, sol_file_path: str) -> Tuple[bool, float]:
-        """Read a .sol file and return the objective value and if the solution is feasible or not."""
-        pass
 
     # TODO: we want the solver to be a modular piece that can be easily replaced with another solver - so to have it like that 
     # we cannot have any return values or anything like that since we need to run it in different thread/process so I guess we would 

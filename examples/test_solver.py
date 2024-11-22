@@ -43,8 +43,10 @@ try:
     solver_thread2.start()
     solver_thread2.join()
 
-    # Wait for the solver to finish
+    # Wait for the solver to finish - NOTE that it needs to finish before validation phase ends otherwise code below is not guaranteed to work
     solver_thread.join()
+
+    time.sleep(5)
 
     # Let agents validate the after agent1 has solved it and submitted the solution
     agent2.validate_solution_request(problem_instance_name)
@@ -70,6 +72,7 @@ try:
 
     # Download problem instance for agent2 - now the best solution should be the one agent1 submitted
     agent2.download_problem_instance_data_by_name(problem_instance_name)
+    agent2.download_best_solution(problem_instance_name)
 
     # Manually look at agent data to see what file he has before cleaning up
     time.sleep(60)

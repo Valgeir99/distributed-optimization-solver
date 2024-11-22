@@ -462,11 +462,10 @@ def solve_bip(problem_instance_path: str, solution_path: str, best_solution_path
     # from the agent node I guess...?
 
 
-def validate_bip_solution(problem_instance_path: str, solution_data: str) -> Tuple[bool, float]:
+def validate_feasibility_bip_solution(problem_instance_path: str, solution_data: str) -> Tuple[bool, float]:
     """
-    Validates a solution for a binary integer problem (BIP) using a problem instance in .mps format.
-    We need to implement robust error handling for the solution data since that file comes from another agent and we don't know if it is 
-    on the correct format. We expect the file to be on the same format as describe in "solution_to_sol_file()" function.
+    Validates a solution (feasbile or not) for a binary integer problem (BIP) using a problem instance in .mps format.
+    The solution is excpected to be in the format of a .sol file (Miplib format) as described in function "solution_to_sol_file()".    
     
     Args:
         problem_instance_path: path to the .mps file for the problem instance
@@ -477,6 +476,8 @@ def validate_bip_solution(problem_instance_path: str, solution_data: str) -> Tup
     Raises:
         Exception: if problem can not be validated
     """
+    # We implement robust error handling for the solution data since that file comes from another agent 
+    # so we don't know if it is on the correct format or not
     try:
         # Read the .mps file
         name, variable_names, c, A, rhs, constraint_types, variable_lb, variable_ub, integrality = read_mps(problem_instance_path)
@@ -512,10 +513,6 @@ def validate_bip_solution(problem_instance_path: str, solution_data: str) -> Tup
         # Calculate the objective value
         objective = np.dot(c, solution)
 
-        # TODO: compaire objective to best one on platform needs to be improving otherwise we 
-        # should not accept the solution - also we need to define somewhere in the code that 
-        # we are just looking at MINIMIZATION problems! (since .mps files from miplib are minimized I think)
-
         return feasible, objective
 
     except Exception as e:
@@ -523,6 +520,43 @@ def validate_bip_solution(problem_instance_path: str, solution_data: str) -> Tup
         raise Exception(f"Validation failed: {str(e)}") from e
     
     
+def get_objective_value_bip_solution(problem_instance_path: str, solution_path: str) -> float:
+    """Calculates the objective value of a solution for a binary integer problem (BIP) using a problem instance in .mps format.
+    The solution is assumed to be in the format of a .sol file (Miplib format) as described in function "solution_to_sol_file()"
+
+    Args:
+        problem_instance_path: path to the .mps file for the problem instance
+        solution_path: path to the .sol file for the solution
+    Returns:
+        objective: objective value of the solution
+    Raises:
+        Exception: if any error occurs during the calculation
+    """
+    # We assume trust here since this solution file has been validated by the platform - so we don't need to check the solution data format
+    # as in function "validate_feasibility_bip_solution()"
+
+    try:
+        # Read the .mps file
+        name, variable_names, c, A, rhs, constraint_types, variable_lb, variable_ub, integrality = read_mps(problem_instance_path)
+
+        # Parse solution data
+        with open(solution_path, "r") as f:
+            lines = f.read().splitlines()
+
+        # Parse variables into solution array
+        solution = np.zeros(len(variable_names))
+        for line in lines[2:]:
+            parts = line.split()
+            var, val = parts
+            solution[variable_names.index(var)] = int(val)
+        
+        # Calculate the objective value
+        objective = np.dot(c, solution)
+    
+    except Exception as e:
+        raise Exception(f"Objective calculation failed: {str(e)}") from e
+
+    return objective
 
    
 

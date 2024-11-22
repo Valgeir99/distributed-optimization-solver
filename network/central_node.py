@@ -19,7 +19,8 @@ CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = int(os.getenv("CENTRAL_NODE_PORT"))
 SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))  # seconds
 SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCECCFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
-
+SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of validations needed to accept a solution
+SOLUTION_VALIDATION_MIN_CONSENSUS = int(os.getenv("SOLUTION_VALIDATION_MIN_CONSENSUS"))  # minimum number of validations needed to accept a solution
 
 
 # TODO: question if we need this one here? It is very good to have to store the solution_data string and validations list since it 
@@ -254,11 +255,11 @@ class CentralNode:
         validations = solution_submission["validations"]
         accepted = False
         if validations:
-            # TODO: we need to have some lower bound for the number of validations needed to make a decision 
             # Calculate final status based on validations, e.g., majority vote
             acceptance_count = sum(validations)
-            rejection_count = len(validations) - acceptance_count
-            accepted = True if acceptance_count > rejection_count else False
+            acceptance_ratio = acceptance_count / len(validations)
+            if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO and acceptance_count >= SOLUTION_VALIDATION_MIN_CONSENSUS:
+                accepted = True
 
             # We need the objective value also so maybe we should ask agents to also send that and then we take the 
             # most common objective value of responses that said the solution was valid? TODO: use this one or the one from the agent who submitted the solution?
@@ -275,7 +276,7 @@ class CentralNode:
         # If the solution is valid then it should be the best solution so far (but it is not guaranteed that it is the best solution 
         # but there is nothing that the central node should do about that since it is the agents decision!)
         if accepted:
-            self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+            self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name} with objective value {objective_value}")
             # Save solution data to file storage with best solutions
             solution_file_location = f"{self.best_solutions_folder}/{problem_instance_name}.sol"
             try:
