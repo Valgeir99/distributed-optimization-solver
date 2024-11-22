@@ -374,10 +374,8 @@ def check_if_bip(integrality, variable_lb, variable_ub):
     """
     # Check if the model is a binary integer program
     if not all(integrality):
-        print("Model contains non-integer variables")
         return False
     if not all(variable_lb == 0) or not all(variable_ub == 1):
-        print("Model contains non-binary integer variables") 
         return False
 
     return True
@@ -410,40 +408,50 @@ def solve_bip(problem_instance_path: str, solution_path: str, best_solution_path
     feasible. It writes the solution to a .sol file. ... TODO
     
     Args:
-        file: path to the .mps file
+        problem_instance_path: path to the .mps file
+        solution_path: path to the .sol file where the solution should be written
+        best_solution_path: path to the .sol file where the best solution on the platform is written
     Returns:
         True if a feasible solution is found, False otherwise
     Raises:
-        ValueError: if the problem is not a binary integer problem  TODO: we cannot do this in e.g. C solver so maybe we don't want this?
+        Exception: if solving fails
     """
-    # Read the .mps file
-    name, variable_names, c, A, rhs, constraint_types, variable_lb, variable_ub, integrality = read_mps(problem_instance_path)
+    # TODO: need to rethink this whole function!!
 
-    # Check if the problem is a binary integer problem
-    if not check_if_bip(integrality, variable_lb, variable_ub):
-        raise ValueError("Problem is not a binary integer problem")
+    try:
+        # Read the .mps file
+        name, variable_names, c, A, rhs, constraint_types, variable_lb, variable_ub, integrality = read_mps(problem_instance_path)
+
+        # Check if the problem is a binary integer problem
+        if not check_if_bip(integrality, variable_lb, variable_ub):
+            raise ValueError("Problem is not a binary integer problem")
+        
+        # Generate a random feasible solution
+        print("Solving problem:", name)
+        # TODO: if we use subprocess then we might want to have a wrapper function that calls this function and only
+        # returns the solution if it is imporving the best solution
+        # TODO: we probably want to have some loop here so we can run this multiple times and then return the best solution?
+        # But we need to think about that in regards to the subprocess thing since we don't want to start a new process 
+        # every time...
+        found, solution, obj = generate_random_bip_solution(c, A, rhs, constraint_types, variable_lb, variable_ub, integrality)
+
+        solution_data = ""
+        # TODO: we would only write the solution to a file if it is better than the best solution on the platform!
+        if found:
+            # Write the solution to a .sol file
+            solution_to_sol_file(solution_path, variable_names, solution, obj)
+            print("Solution written to", solution_path)
+
+            with open(solution_path, "r") as f:   # TODO: just a temp solution to get the solution data
+                solution_data = f.read()
+        else:
+            print("No feasible solution found")
+
+        return found, solution_data, obj
     
-    # Generate a random feasible solution
-    print("Solving problem:", name)
-    # TODO: if we use subprocess then we might want to have a wrapper function that calls this function and only
-    # returns the solution if it is imporving the best solution
-    # TODO: we probably want to have some loop here so we can run this multiple times and then return the best solution?
-    # But we need to think about that in regards to the subprocess thing since we don't want to start a new process 
-    # every time...
-    found, solution, obj = generate_random_bip_solution(c, A, rhs, constraint_types, variable_lb, variable_ub, integrality)
-
-    solution_data = ""
-    if found:
-        # Write the solution to a .sol file
-        solution_to_sol_file(solution_path, variable_names, solution, obj)
-        print("Solution written to", solution_path)
-
-        with open(solution_path, "r") as f:   # TODO: just a temp solution to get the 
-            solution_data = f.read()
-    else:
-        print("No feasible solution found")
-
-    return found, solution_data, obj
+    except Exception as e:
+        # General error handling to propagate to the calling function
+        raise Exception(f"Solving failed: {str(e)}") from e
 
 
     # TODO: check if the problem is actually improving the best solution? - depends how we want to use this function (just remember that 
@@ -454,10 +462,10 @@ def solve_bip(problem_instance_path: str, solution_path: str, best_solution_path
     # from the agent node I guess...?
 
 
-def validate_bip(problem_instance_path: str, solution_data: str) -> Tuple[bool, float]:
+def validate_bip_solution(problem_instance_path: str, solution_data: str) -> Tuple[bool, float]:
     """
-    Reads a .mps file and a solution data string generated from a .sol file and validates the solution if it is binary integer problem. 
-    We ned to implement robust error handling for the solution data since that file comes from another agent and we don't know if it is 
+    Validates a solution for a binary integer problem (BIP) using a problem instance in .mps format.
+    We need to implement robust error handling for the solution data since that file comes from another agent and we don't know if it is 
     on the correct format. We expect the file to be on the same format as describe in "solution_to_sol_file()" function.
     
     Args:
@@ -466,67 +474,56 @@ def validate_bip(problem_instance_path: str, solution_data: str) -> Tuple[bool, 
     Returns:
         feasible: True if a feasible solution is found, False otherwise
         obj: objective value of the solution
+    Raises:
+        Exception: if problem can not be validated
     """
-    # Read the .mps file
-    name, variable_names, c, A, rhs, constraint_types, variable_lb, variable_ub, integrality = read_mps(problem_instance_path)
-
-    # Check if the problem is a binary integer problem
-    if not check_if_bip(integrality, variable_lb, variable_ub):
-        print("Problem is not a binary integer problem")
-        return False, -1
-
-    # Read the .sol file and validate the format
     try:
+        # Read the .mps file
+        name, variable_names, c, A, rhs, constraint_types, variable_lb, variable_ub, integrality = read_mps(problem_instance_path)
+
+        # Ensure the problem is a binary integer problem
+        if not check_if_bip(integrality, variable_lb, variable_ub):
+            raise ValueError("The problem is not a binary integer problem.")
+
+        # Parse solution data
         lines = solution_data.splitlines()
-        
-        # Basic format checks
         if len(lines) < 3:
-            print("Solution file format error: File is too short.")
-            return False, -1
-        
-        # Parse objective value line
-        # try:
-        #     obj = float(lines[1].split()[1])
-        # except (IndexError, ValueError):
-        #     print("Solution file format error: Objective line is malformed.")
-        #     return False, -1
-        
+            raise ValueError("Solution file format error: File is too short.")
+
         # Parse variables into solution array
         solution = np.zeros(len(variable_names))
         for line in lines[2:]:
             parts = line.split()
             if len(parts) != 2:
-                print("Solution file format error: Invalid variable assignment line.")
-                return False, -1
+                raise ValueError("Solution file format error: Invalid variable assignment line.")
 
             var, val = parts
             if var not in variable_names:
-                print(f"Solution file format error: Variable '{var}' not found in problem definition.")
-                return False, -1
-
+                raise ValueError(f"Solution file format error: Variable '{var}' not found in problem definition.")
+            
             try:
-                solution[variable_names.index(var)] = int(val)   # put in the variable value in the correct index to match the contraint matrix A read above
+                solution[variable_names.index(var)] = int(val)
             except ValueError:
-                print(f"Solution file format error: Non-integer value '{val}' for variable '{var}'.")
-                return False, -1
+                raise ValueError(f"Solution file format error: Non-integer value '{val}' for variable '{var}'.")
 
-    except IOError:
-        print("Could not read solution file.")
-        return False, -1
+        # Check feasibility
+        feasible = check_feasibility(solution, A, rhs, constraint_types)
+
+        # Calculate the objective value
+        objective = np.dot(c, solution)
+
+        # TODO: compaire objective to best one on platform needs to be improving otherwise we 
+        # should not accept the solution - also we need to define somewhere in the code that 
+        # we are just looking at MINIMIZATION problems! (since .mps files from miplib are minimized I think)
+
+        return feasible, objective
+
+    except Exception as e:
+        # General error handling to propagate to the calling function
+        raise Exception(f"Validation failed: {str(e)}") from e
     
-    # Check if the solution is feasible
-    feasible = check_feasibility(solution, A, rhs, constraint_types)
+    
 
-    # Calculate objective
-    objective = np.dot(c, solution)
+   
 
-    # TODO: compaire objective to best one on platform needs to be improving otherwise we 
-    # should not accept the solution - also we need to define somewhere in the code that 
-    # we are just looking at MINIMIZATION problems! (since .mps files from miplib are minimized I think)
-
-    if feasible:
-        print("Solution is feasible")
-        return True, objective
-    else:
-        print("Solution is not feasible")
-        return False, objective
+    

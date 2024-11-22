@@ -4,8 +4,9 @@ import httpx
 import shutil
 import os
 import random
+import logging
 from dotenv import load_dotenv
-from config import AGENT_DATA_DIR
+from config import AGENT_DATA_DIR, LOG_FILE_PATH
 import solver.solver_python as solver
 
 # Load environment variables from .env file
@@ -52,6 +53,10 @@ class AgentNode:
         # Agent has a name (for logging purposes)
         self.name = str(name)
 
+        # Logger
+        self.logger = self._setup_logger()
+        self.logger.info(f"Agent node named {self.name} started")
+
         # Agent can be malicous or not
         self.malicous = False
 
@@ -60,7 +65,8 @@ class AgentNode:
         self.central_node_port = CENTRAL_NODE_PORT
 
         # Folder to store all agent data
-        self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.name}"
+        #self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.name}"
+        self.agent_data_path = f"../data/agent_data/agent_{self.name}"
         os.makedirs(self.agent_data_path, exist_ok=True)
 
         # Problem instances
@@ -83,9 +89,30 @@ class AgentNode:
         # Active solution submissions - agent keeps track of the solution submissions that are still pending
         #self.active_solution_submission_ids: Set[str] = set()  # NOTE: he does it in the problem instance info
 
-        print(f"Agent node named {self.name} started")
+        # TODO: might want to use try-except here to see if agent started correctly or not - because maybe we don't want to use exist_ok=True for the directories since they should be 
+        # empty on initialization (but likely there will be agents with same id started previously so maybe we just make the dir and delete everything in it if it exists?)
 
-    
+
+    def _setup_logger(self) -> logging.Logger:
+        """Set up the logger for the agent node."""
+        # Create or get the logger for the specific agent
+        logger = logging.getLogger(self.name)
+        if not logger.hasHandlers():  # Avoid adding duplicate handlers
+            # Create a file handler
+            file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            
+            # Set the logger's level
+            logger.setLevel(logging.DEBUG)
+            logger.addHandler(file_handler)
+
+        # Suppress HTTP-related debug logs globally
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+        return logger
+
+
     ## Request functions to communicate with central node server ##
 
     def download_problem_instance(self) -> str:
@@ -94,10 +121,11 @@ class AgentNode:
         Returns:
             problem_instance_name: The name of the problem instance that was downloaded | None if no problem instance was downloaded
         """
+        self.logger.info("Request to download any problem instance...")
         # Get pool of problem instances
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/info")
         if response.status_code != 200:
-            print(f"Error: {response.status_code} {response.text}")
+            self.logger.error(f"Failed to fetch pool of problem instances - HTTP Error {response.status_code}: {response.text}")
             return
         problem_instances = response.json()   # list of problem instances
 
@@ -109,27 +137,27 @@ class AgentNode:
                 break
         
         if problem_instance_name is None:
-            print("No problem instance downloaded")
-        else:     
-            # Download the problem instance
-            self.download_problem_instance_data_by_name(problem_instance_name)
+            self.logger.warning("No new problem instance available for download.")
+            return
+       
+        # Download the problem instance
+        self.download_problem_instance_data_by_name(problem_instance_name)
 
         return problem_instance_name
 
     
-    def download_problem_instance_data_by_name(self, problem_instance_name: str) -> bool:
+    def download_problem_instance_data_by_name(self, problem_instance_name: str):
         """Download a problem instance from the central node by its id and save it to local storage.
         It downloads the problem instance data, including the problem instance file and the best solution file 
         if it exists.
         Args:
             problem_instance_name: The name of the problem instance to download
-        Returns:
-            bool: True if the problem instance was downloaded successfully, False if not
         """
+        self.logger.info(f"Request to downloaod problem instance {problem_instance_name}...")
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}")
         if response.status_code != 200:
-            print(f"Error: {response.status_code} {response.text}")
-            return False
+            self.logger.error(f"Failed to download problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
+            return
         problem_instance = response.json()
 
         # Save the problem instance to local storage
@@ -137,8 +165,8 @@ class AgentNode:
             with open(f"{self.problem_instances_path}/{problem_instance_name}.mps", "w") as file:
                 file.write(problem_instance["problem_data"])
         except Exception as e:
-            print(f"Error: {e}")
-            return False
+            print(f"Error when saving problem instance to local storage: {e}")
+            return
 
         # Check if there is a solution attached to the problem instance also
         try:
@@ -146,8 +174,8 @@ class AgentNode:
                 with open(f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol", "w") as file:
                     file.write(problem_instance["solution_data"])
         except Exception as e:
-            print(f"Error: {e}")
-            return False
+            print(f"Error when saving problem instance best solution to local storage: {e}")
+            return
 
         # Add the problem instance information to the agent's dictionary of problem instances
         # If first time downloading we need to create the dictionary entry then we need 
@@ -173,7 +201,7 @@ class AgentNode:
             if problem_instance["solution_data"]:
                 self.problem_instances[problem_instance_name]["best_platform_sol_path"] = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
 
-        return True
+        self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully")
 
 
     # TODO
@@ -196,21 +224,24 @@ class AgentNode:
     def submit_solution(self, problem_instance_name: str, solution_data: str, objective_value: float):
         """Submit a solution to the central node get solution submission id in response
         so that agent can track the status of the solution submission."""
+        self.logger.info(f"Request to submit solution for problem instance {problem_instance_name}...")
         response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/upload/{problem_instance_name}", json={"solution_data": solution_data, "objective_value": objective_value})
         if response.status_code != 200:
-            print(f"Error: {response.status_code} {response.text}")
+            self.logger.error(f"Failed to submit solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
         solution_submission_id = response.json()["solution_submission_id"]
         self.problem_instances[problem_instance_name]["active_solution_submission_ids"].add(solution_submission_id)
+        self.logger.info(f"Solution submitted for problem instance {problem_instance_name} with solution submission id {solution_submission_id}")
 
 
     def check_submit_solution_status(self, solution_submission_id: str):
         """Check the status of a solution submission with the central node to see how the validation is going. 
         Once the solution submission is validated, the agent will update the reward he has accumulated for this problem 
         instance and remove the solution submission from active solution submissions."""
+        self.logger.info(f"Request to check status of solution submission {solution_submission_id}...")
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/status/{solution_submission_id}")
         if response.status_code != 200:
-            print(f"Error: {response.status_code} {response.text}")
+            self.logger.error(f"Failed to check status of solution submission {solution_submission_id} - HTTP Error {response.status_code}: {response.text}")
             return
         solution_submission_info = response.json()
 
@@ -218,13 +249,12 @@ class AgentNode:
         # and remove it from the agent's list of active solution submissions
         problem_instance_name = solution_submission_info["problem_instance_name"]
         if solution_submission_info["accepted"] is not None:
-            print("Solution submission validated")
+            self.logger.info(f"Solution submission {solution_submission_id} has been validated - no need to check status again!")
             active_solution_submission_ids = self.problem_instances[problem_instance_name]["active_solution_submission_ids"]
             if solution_submission_id in active_solution_submission_ids:
-                print("should only print once here for each solution submission", solution_submission_id)
                 self.problem_instances[problem_instance_name]["reward_accumulated"] += solution_submission_info["reward"]
                 active_solution_submission_ids.remove(solution_submission_id)
-       
+                self.logger.info(f"Agent has now collected solution submission reward ({solution_submission_info["reward"]} coins) for {solution_submission_id} and it has been removed from agent's active solution submissions")
 
 
     def validation_any_solution_request(self):
@@ -240,16 +270,17 @@ class AgentNode:
         Args:
             problem_instance_name: The name of the problem instance that the solution belongs to
         """
-
+        self.logger.info(f"Request to validate a solution for problem instance {problem_instance_name}...")
         # Check if agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
-            print(f"Error: Agent does not have problem instance {problem_instance_name} stored")
-            # TODO: here we can download the problem instance so that we can validate the solution
+            self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
+            # TODO: here we can download the problem instance so that we can validate the solution - change log message to info and add download here
             return
         
-        # Send reqeust to central node to validate the solution - get sent solution back from central node
+        # Send request to central node to validate the solution - get sent solution back from central node
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/download/{problem_instance_name}")
         if response.status_code != 200:
+            self.logger.error(f"Failed to validate a solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             print(f"Error: {response.status_code} {response.text}")
             return
         solution = response.json()
@@ -257,22 +288,26 @@ class AgentNode:
         # Validate the solution and calculate the objective value
         solution_data = solution["solution_data"]
         validation_result, objective_value = self.validate_solution(problem_instance_name, solution_data)
+        self.logger.info(f"Solution validation result: accepted={validation_result}")
 
         # Send the validation result back to the central node
         solution_submission_id = solution["solution_submission_id"]
+        self.logger.info(f"Requesting to submit validation result to central node for solution submission {solution_submission_id}...")
         response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/{solution_submission_id}", 
                               json={"response": validation_result, "objective_value": objective_value})
         if response.status_code != 200:
-            print(f"Error: {response.status_code} {response.text}")
+            self.logger.error(f"Failed to submit validation result for solution submission {solution_submission_id} - HTTP Error {response.status_code}: {response.text}")
             return
         solution_response = response.json()
         
         # Update the reward he has accumulated for this problem instance TODO: migh have to use lock if we are running agent even loop async
         self.problem_instances[problem_instance_name]["reward_accumulated"] += solution_response["reward"]
        
-       # TODO: here or create new request to check if the problem instance is still active or not (because if inactive on the platform 
-       # we should remove it form the agent's problem instances. Also if the agent is solving this problem we would need to stop the
-       # solver maybe if possible but could be complicated...)
+        # TODO: here or create new request to check if the problem instance is still active or not (because if inactive on the platform 
+        # we should remove it form the agent's problem instances. Also if the agent is solving this problem we would need to stop the
+        # solver maybe if possible but could be complicated...)
+
+        self.logger.info(f"Solution submission {solution_submission_id} for problem instance {problem_instance_name} validated successfully and agent collected reward ({solution_response["reward"]} coins).")
 
 
 
@@ -282,12 +317,18 @@ class AgentNode:
     
     def validate_solution(self, problem_instance_name: str, solution: str) -> Tuple[bool, float]:
         """Validate a solution."""
-
+        self.logger.info("Starting to validate solution...")
         if self.malicous:
             # Malicious agent - always return False
+            self.logger.info("Malicious agent - always returning False when validating solution")
             return False, -1
         
-        accepted, obj_value = solver.validate_bip(self.problem_instances[problem_instance_name]["instance_file_path"], solution)
+        try:
+            accepted, obj_value = solver.validate_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], solution)
+        except Exception as e:
+            self.logger.error(f"Error when validating solution: {e}")
+            return False, -1
+        
         return accepted, obj_value
 
 
@@ -312,15 +353,15 @@ class AgentNode:
         """Solve a problem instance that the agent has stored. The agent will solve the problem instance 
         in a seperate thread or process so that it can continue to run its event loop and communicate with the central node.
         TODO should we then have the requirement to call this function in a seperate thread or process?"""
-
+        self.logger.info(f"Starting to solve problem instance {problem_instance_name}...")
         # Check if the agent is already solving a problem instance
         if self.solving_problem_instance_name:
-            print(f"Error: Agent is already solving problem instance {self.solving_problem_instance_name}")
+            self.logger.error(f"Error: Agent is already solving problem instance {self.solving_problem_instance_name}")
             return
 
         # Check if the agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
-            print(f"Error: Agent does not have problem instance {problem_instance_name} stored")
+            self.logger.error(f"Error: Agent does not have problem instance {problem_instance_name} stored")
             return
         
         # Set the problem instance that the agent is solving
@@ -328,6 +369,7 @@ class AgentNode:
 
         # Solve the problem instance - loop until some stopping criterion is met? TODO: now I just solve it x times but we should also definately check problem instance 
         # status to see if it is still active or not before we start solving it every time
+        # Depends also what kind of solver we use and if we will allow that solver to have access to the best solution known on the platform...
 
         for _ in range(SOLVE_ITERATIONS):
 
@@ -340,9 +382,9 @@ class AgentNode:
                 #solution_thread = threading.Thread(target=solver.solve_bip, args=(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"]))
                 #solution_thread.start()
                 sol_found, solution_data, obj = solver.solve_bip(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_self_sol_path")
-            except ValueError as e:
-                # Not binary integer problem
-                print(f"Error: {e}")
+            except Exception as e:
+                self.logger.error(f"Error when solving problem instance {problem_instance_name}: {e}")   # TODO: not sure how we want to log solver errors - if doing properly we would need to raise exception in the solver and catch it here
+                self.solving_problem_instance_name = None
                 return   # TODO: do something
 
             # If found a solution...
@@ -364,7 +406,7 @@ class AgentNode:
         # After loop is done, set the solving problem instance to None
         self.solving_problem_instance_name = None
 
-
+        self.logger.info(f"Stopped solving problem instance {problem_instance_name}")
 
 
         # Not sure what we will do here exactly...
@@ -389,15 +431,23 @@ class AgentNode:
         print(self.problem_instances)
 
 
+    @staticmethod
+    def _remove_readonly(func, path, exc_info):
+        """Remove the read-only flag from a file or directory so that it can be deleted."""
+        os.chmod(path, 0o777)
+        func(path)
+
+
     def clean_up(self):
         """Clean up the agent node."""
         # Delete the agent data folder
-        shutil.rmtree(self.agent_data_path)
+        shutil.rmtree(self.agent_data_path, onexc=AgentNode._remove_readonly)
 
-        # Log some agent information TODO: need to implement logging and make sure this log file is not in the agent data folder
+        # Log some agent information
+        msg = ""
         for problem_instance_name in self.problem_instances_ids:
-            print(f"Agent node {self.name} accumulated reward for problem instance {problem_instance_name}: {self.problem_instances[problem_instance_name]['reward_accumulated']}")
-            print(f"Agent node {self.name} best solution for problem instance {problem_instance_name}: {self.problem_instances[problem_instance_name]['best_self_obj']}")
+            msg += f"For problem instance {problem_instance_name}:\n - Best solution found by agent: {self.problem_instances[problem_instance_name]['best_self_obj']}\n \
+            - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']}\n"
 
-        print(f"Agent node named {self.name} cleaned up")
+        self.logger.info(f"Agent node cleaned up")
 

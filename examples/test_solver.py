@@ -2,12 +2,16 @@ import time
 import sys
 import os
 import threading
+from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from network.agent_node import AgentNode
 from network.central_node_server import start_server, stop_server
 
 from config import DB_PATH
+
+load_dotenv()
+SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))
 
 try:
     # Start the central node server in a separate thread
@@ -52,7 +56,7 @@ try:
     agent3.print_problem_instances()
 
     # Wait for validation to finish
-    time.sleep(120)
+    time.sleep(SOLUTION_VALIDATION_DURATION)
 
     # Database stuff
     from utils.database_utils import connect_to_database, query_db

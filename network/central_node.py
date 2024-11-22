@@ -8,9 +8,10 @@ import time
 from datetime import datetime, timedelta
 from typing import TypedDict, Dict
 import uuid
+import logging
 
 from utils.database_utils import create_database, teardown_database
-from config import DB_PATH, BEST_SOLUTIONS_DIR
+from config import DB_PATH, BEST_SOLUTIONS_DIR, LOG_FILE_PATH
 
 # Load environment variables from .env file
 load_dotenv()
@@ -60,7 +61,9 @@ class CentralNode:
     def __init__(self, web_server: FastAPI):
         """Initialize the central node with a web server and connect to the database."""
 
-        print("Central node started")
+        # Logger
+        self.logger = self._setup_logger()
+        self.logger.info("Central node started")
 
         self.host = CENTRAL_NODE_HOST
         self.port = CENTRAL_NODE_PORT
@@ -92,14 +95,35 @@ class CentralNode:
             os.makedirs(self.best_solutions_folder)
 
 
+    def _setup_logger(self) -> logging.Logger:
+        """Set up the logger for the central node."""
+        # Create or get the logger for the specific agent
+        logger = logging.getLogger("Central node")
+        if not logger.hasHandlers():  # Avoid adding duplicate handlers
+            # Create a file handler
+            file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            
+            # Set the logger's level
+            logger.setLevel(logging.DEBUG)
+            logger.addHandler(file_handler)
+
+        # Suppress HTTP-related debug logs globally
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+        return logger
+
+
     def __connect_to_database(self):
         """Create a connection to the database."""
         try:
             connection = sqlite3.connect(self.db_path, check_same_thread=False)   # check_same_thread=False is needed for multithreading
-            print(f"Connected to database at {self.db_path}")
+            self.logger.info(f"Connected to database at {self.db_path}")
             return connection
         except sqlite3.Error as e:
             # Raise exception to stop the program (we can't continue without the database)
+            self.logger.error(f"Error while connecting to database at {self.db_path}: {e}")
             raise sqlite3.Error(f"Error while connecting to database at {self.db_path}: {e}")
 
 
@@ -107,9 +131,9 @@ class CentralNode:
         """Close the connection to the database."""
         try:
             self.db_connection.close()
-            print(f"Disconnected from database at {self.db_path}")
+            self.logger.info(f"Disconnected from database at {self.db_path}")
         except sqlite3.Error as e:
-            print(f"Error while disconnecting from database at {self.db_path}: {e}")
+            self.logger.error(f"Error while disconnecting from database at {self.db_path}: {e}")
 
 
     def query_db(self, query: str, params: tuple=()) -> list[dict] | None:
@@ -126,9 +150,9 @@ class CentralNode:
             cursor.close()
             return result_dict
         except sqlite3.Error as e:
-            print(f"Error while querying database at {self.db_path}: {e}")
+            self.logger.error(f"Error while querying database at {self.db_path}: {e}")
             return None
-        # TODO: remember we need to check if the result is None when we call this function!!
+        # NOTE: remember we need to check if the result is None when we call this function!!
 
 
 
@@ -142,7 +166,10 @@ class CentralNode:
             cursor.close()
         except sqlite3.Error as e:
             self.db_connection.rollback()
+            self.logger.error(f"Error while editing data in database at {self.db_path}: {e}")
             raise sqlite3.Error(f"Error while editing data in database at {self.db_path}: {e}")
+        # TODO: not sure if we should raise the exception here (because right now we don't catch it so server would fail but maybe we should catch it but then we need to make sure 
+        # there is still data integrity in the database and that the in memory data struture is consistent with the database data)!!!!!!
 
 
     def save_db(self):
@@ -153,13 +180,13 @@ class CentralNode:
             with open(self.db_path, "rb") as f:
                 with open(backup_db_path, "wb") as f2:
                     f2.write(f.read())
-            print(f"Database saved to {backup_db_path}")
+            self.logger.info(f"Database saved to {backup_db_path}")
         except Exception as e:
-            print(f"Error while saving database: {e}")
+            self.logger.error(f"Error while saving database: {e}")
             
 
     def generate_id(self):
-        """Generate a unique id for solution submissions."""
+        """Generate a unique id (for solution submissions)."""
         return str(uuid.uuid4())
 
 
@@ -173,9 +200,10 @@ class CentralNode:
             "INSERT INTO all_solutions (id, problem_instance_name, submission_time, validation_end_time) VALUES (?, ?, ?, ?)",
             (solution_submission_id, problem_instance_name, submission_time, validation_end_time)
         )
+        # TODO: catch exception and cancel solution validation phase if it fails to insert to database (just make the submission invalid and let agent know so maybe he can resubmit)...
         
         # Start a background thread for this solution submission validation - we use daemon threads so that this thread does not continue to run after the main thread (central node server) has finished
-        validation_thread = threading.Thread(target=self._manage_validation_phase, args=(solution_submission_id, validation_end_time), daemon=True)
+        validation_thread = threading.Thread(target=self._manage_validation_phase, args=(problem_instance_name, solution_submission_id, validation_end_time), daemon=True)
         validation_thread.start()
 
         # Store the validation phase information for this solution submission in memory for quick access and short-term storage
@@ -190,7 +218,9 @@ class CentralNode:
             "objective_values": []
         }
 
-    def _manage_validation_phase(self, solution_submission_id: str, validation_end_time: datetime):
+        self.logger.info(f"Started validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+
+    def _manage_validation_phase(self, problem_instance_name: str, solution_submission_id: str, validation_end_time: datetime):
         """Manage the ongoing validation phase and end it after the time limit."""
         while datetime.now() < validation_end_time:
             # The thread waits until the validation period expires
@@ -209,19 +239,17 @@ class CentralNode:
         # to see if necessary to lock the whole function or not... https://chatgpt.com/c/6735af4f-8fc0-8003-95ab-d5c0a8cef192
         # We might be in the middle of finalizing validation while an agent is sending validation results so we need to be careful
         with self.lock:
-            self._finalize_validation(solution_submission_id)
+            self._finalize_validation(problem_instance_name, solution_submission_id)
 
-    def _finalize_validation(self, solution_submission_id: str):
+    def _finalize_validation(self, problem_instance_name: str, solution_submission_id: str):
         """Finalize validation based on the collected results."""
        
         # Retrieve collected validation results
         solution_submission = self.active_solution_submissions.get(solution_submission_id)
         if solution_submission is None:
-            print("Solution submission info not found.")
+            self.logger.error(f"No data found for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
             return
         
-        problem_instance_name = solution_submission["problem_instance_name"]
-
         objective_value = None
         validations = solution_submission["validations"]
         accepted = False
@@ -247,21 +275,24 @@ class CentralNode:
         # If the solution is valid then it should be the best solution so far (but it is not guaranteed that it is the best solution 
         # but there is nothing that the central node should do about that since it is the agents decision!)
         if accepted:
-            print("Solution submission accepted")
+            self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
             # Save solution data to file storage with best solutions
             solution_file_location = f"{self.best_solutions_folder}/{problem_instance_name}.sol"
             try:
                 with open(solution_file_location, "w") as f:   # will create the file if it does not exist
                     f.write(solution_submission["solution_data"])
-                print("Solution file saved to:", solution_file_location)
+                self.logger.info(f"Best solution saved to file: {solution_file_location}")
             except Exception as e:
-                print(f"Error while central node was saving best solution file: {e}")
+                self.logger.error(f"Error while saving best solution to file {solution_file_location}: {e}")
 
             # "Give" reward to the agent who submitted the solution
             solution_submission["reward_accumulated"] += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD   # we don't implement proper reward mechanism just emulating it by adding to the reward given for this solution submission
 
             # Update the best solution in the database (or insert if it does not exist)
             self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", (problem_instance_name, solution_submission_id, solution_file_location))
+
+        else:
+            self.logger.info(f"Declined solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
         #print("solution_submission in finalize after validation", solution_submission)
 
@@ -278,6 +309,7 @@ class CentralNode:
         reward_budget = results[0]["reward_budget"]
         if reward_accumulated >= reward_budget:
             self.edit_data_in_db("UPDATE problem_instances SET active = False WHERE name = ?", (problem_instance_name,))
+            self.logger.info(f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore")
             
         # Delete solution file from temporary file storage (NOTE: not doing that since we are storing the solution data in memory)
 
@@ -286,14 +318,17 @@ class CentralNode:
 
         # Stop the thread? TODO
 
+        self.logger.info(f"Ended validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+
      
 
     def stop(self):
         """Stop the central node."""
         self.__disconnect_from_database()
         # TODO: possibly delete some folders
-        print("Central node stopped")
+        self.logger.info("Central node stopped")
          # Print the active solution submissions
-        print("Active solution submissions after stopping central node:")
+        msg = "Active solution submissions after stopping central node:"
         for solution_submission_id in self.active_solution_submissions:
-            print(solution_submission_id)
+            msg += f"\n{solution_submission_id}"
+        self.logger.info(msg)

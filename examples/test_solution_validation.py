@@ -2,12 +2,16 @@ import time
 import sys
 import os
 import threading
+from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from network.agent_node import AgentNode
 from network.central_node_server import start_server, stop_server
 
 from config import DB_PATH
+
+load_dotenv()
+SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))
 
 # Start the central node server in a separate thread
 central_node_server_thread = start_server()
@@ -69,8 +73,10 @@ agent1.check_submit_solution_status(solution_submission_id)
 # Submit another soltuion that no one will validate - nothing should happen in the end of the validation phase
 agent2.submit_solution(problem_instance_name, "Some solution data vol 2", 82.0)
 
+# TODO: let submitting agent validate is own solution (should not be allowed) and let agents validate same solution mulitple times (should not be allowed)
+
 # Sleep until solution validation done
-time.sleep(120)
+time.sleep(SOLUTION_VALIDATION_DURATION)
 
 # Check twice after the solution validation is done - the second time should not make any changes (print statement)
 agent1.check_submit_solution_status(solution_submission_id)
