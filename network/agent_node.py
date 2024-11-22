@@ -27,8 +27,8 @@ class ProblemInstanceInfo(TypedDict):
     instance_file_path: str
     best_platform_obj: float | None
     best_self_obj: float | None
-    best_platform_sol_path: str | None
-    best_self_sol_path: str
+    best_platform_sol_path: str   # NOTE this path might not exist if the best solution is not downloaded yet
+    best_self_sol_path: str   # NOTE this path might not exist if the best solution is not found yet
     reward_accumulated: int
     active_solution_submission_ids: Set[str]  # Set of solution submission ids that the agent is waiting for submission status for
 
@@ -170,11 +170,10 @@ class AgentNode:
             return
 
         # Check if there is a solution attached to the problem instance also
-        best_platform_sol_path = None
+        best_platform_sol_path = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
         best_platform_obj = None
         try:
             if problem_instance["solution_data"]:
-                best_platform_sol_path = f"{self.best_platfrom_solutions_path}/{problem_instance_name}.sol"
                 with open(best_platform_sol_path, "w") as file:
                     file.write(problem_instance["solution_data"])
                 # Get the objective value of the best solution
@@ -206,7 +205,6 @@ class AgentNode:
         else:
             # Update the problem instance information dictionary - only update if solution data came with the download
             if problem_instance["solution_data"]:
-                self.problem_instances[problem_instance_name]["best_platform_sol_path"] = best_platform_sol_path
                 self.problem_instances[problem_instance_name]["best_platform_obj"] = best_platform_obj
             self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully (this problem instance was already stored by the agent)")
 
@@ -238,15 +236,16 @@ class AgentNode:
         best_solution = response.json()
 
         # Save the best solution to local storage
+        best_platform_sol_path = self.problem_instances[problem_instance_name]["best_platform_sol_path"]
         try:
-            with open(self.problem_instances[problem_instance_name]["best_platform_sol_path"], "w") as file:
+            with open(best_platform_sol_path, "w") as file:
                 file.write(best_solution["solution_data"])
         except Exception as e:
             self.logger.error(f"Error when saving best solution to local storage: {e}")
             return
 
         # Calculate the objective value of the best solution
-        best_obj = solver.get_objective_value_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_platform_sol_path"])
+        best_obj = solver.get_objective_value_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], best_platform_sol_path)
         
         # Update the problem instance information dictionary with the new best solution
         self.problem_instances[problem_instance_name]["best_platform_obj"] = best_obj
@@ -336,6 +335,22 @@ class AgentNode:
         
         # Update the reward he has accumulated for this problem instance TODO: migh have to use lock if we are running agent even loop async
         self.problem_instances[problem_instance_name]["reward_accumulated"] += solution_response["reward"]
+
+        # TODO: ask Joe if we want this or not since this is good to have for us but maybe not general enough if we want to get some test results to see
+        # how the platform could behave in real life when agents would probably not do this - well actually they might do this since they gain solving 
+        # power since now the solver could have access to the best solution on the platform earlier than the validation phase ends! (see below)
+
+        # If the solution was accepted, update the agent's best solution for the platform - NOTE malicous agent should not do this since they accept all solutions
+        if not self.malicous:
+            if validation_result is True:
+                try:
+                    with open(self.problem_instances[problem_instance_name]["best_platform_sol_path"], "w") as file:
+                        file.write(solution_data)
+                    self.problem_instances[problem_instance_name]["best_platform_obj"] = objective_value
+                except Exception as e:
+                    self.logger.error(f"Error when saving best solution to local storage: {e}")
+                    return
+                self.logger.info(f"Agent has now updated the platform's best solution for problem instance {problem_instance_name} with objective value {objective_value}")
        
         # TODO: here or create new request to check if the problem instance is still active or not (because if inactive on the platform 
         # we should remove it form the agent's problem instances. Also if the agent is solving this problem we would need to stop the
@@ -370,7 +385,7 @@ class AgentNode:
             feasible, obj_value = solver.validate_feasibility_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], solution_data)
             if feasible:
                 # Compare the objective value with the agent's best known solution - NOTE: ASSUME ONLY MINIMIZATION PROBLEMS
-                if self.problem_instances[problem_instance_name]["best_self_obj"] is None or obj_value < self.problem_instances[problem_instance_name]["best_self_obj"]:
+                if self.problem_instances[problem_instance_name]["best_plat"] is None or obj_value < self.problem_instances[problem_instance_name]["best_self_obj"]:
                     return True, obj_value
                 else:
                     return False, -1
