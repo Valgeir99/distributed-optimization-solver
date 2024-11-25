@@ -50,9 +50,14 @@ def validate_solutions():
     for problem_instance in agent.problem_instances:
         agent.validate_solution_request(problem_instance)
 
+def update_problem_instance_status():
+    for problem_instance in agent.problem_instances:
+        agent.update_problem_instance_status(problem_instance)
+
 # Schedule agent events
 schedule.every(1).minutes.do(validate_solutions)
 schedule.every(1).minutes.do(check_submit_solution_status)
+schedule.every(5).minutes.do(update_problem_instance_status)   # not necessarry but this will clean up solver memory if problem instance is not active anymore
 
 solver_thread = None
 execution_time = int(sys.argv[2])   # in seconds

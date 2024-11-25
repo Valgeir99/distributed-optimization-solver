@@ -32,6 +32,7 @@ class ProblemInstanceInfo(TypedDict):
     best_self_sol_path: str   # NOTE this path might not exist if the best solution is not found yet
     reward_accumulated: int
     active_solution_submission_ids: Set[str]  # Set of solution submission ids that the agent is waiting for submission status for
+    active: bool   # True if the problem instance is still active on the platform, False otherwise
 
     # TODO: maybe don't have this data structure fixed now we might discover that we need to store more information later on
     # Need to implement you know the solution phase and maybe validation also before
@@ -176,7 +177,7 @@ class AgentNode:
             with open(problem_instance_file_path, "w") as file:
                 file.write(problem_instance["problem_data"])
         except Exception as e:
-            print(f"Error when saving problem instance to local storage: {e}")
+            self.logger.error(f"Error when saving problem instance to local storage: {e}")
             return
 
         # Check if there is a solution attached to the problem instance also
@@ -189,7 +190,7 @@ class AgentNode:
                 # Get the objective value of the best solution
                 best_platform_obj = self.solver.get_objective_value(problem_instance_name, problem_instance["solution_data"])
         except Exception as e:
-            print(f"Error when saving problem instance best solution to local storage and calculating objective: {e}")
+            self.logger.error(f"Error when saving problem instance best solution to local storage and calculating objective: {e}")
             return
 
         # Add the problem instance information to the agent's dictionary of problem instances
@@ -209,7 +210,8 @@ class AgentNode:
                 "best_platform_sol_path": best_platform_sol_path,
                 "best_self_sol_path": f"{self.best_self_solutions_path}/{problem_instance_name}.sol",   # NOTE: it does not exits yet but this is the path where the agent will save the best solution found by itself
                 "reward_accumulated": 0,
-                "active_solution_submission_ids": set()
+                "active_solution_submission_ids": set(),
+                "active": True
             }
 
             try:
@@ -219,7 +221,7 @@ class AgentNode:
                 self.logger.error(f"Error when adding problem instance to solver: {e}")
                 return
 
-            message = f"Problem instance {problem_instance_name} downloaded successfully for the first time!"
+            message = f"Problem instance {problem_instance_name} downloaded successfully for the first time and added to solver!"
         else:
             # Update the problem instance information dictionary - only update if solution data came with the download
             if problem_instance["solution_data"]:
@@ -232,16 +234,32 @@ class AgentNode:
         self.logger.info(message)
 
 
-    # TODO
-    # def check_problem_instance_status(self, problem_instance_name: str):
-    #     """Check the status of a problem instance with the central node to see if it is still active or not."""
-    #     response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/status/{problem_instance_name}")
-    #     if response.status_code != 200:
-    #         print(f"Error: {response.status_code} {response.text}")
-    #         return
-    #     problem_instance_info = response.json()
-    #     print(problem_instance_info)
-            
+    def update_problem_instance_status(self, problem_instance_name: str):
+        """Update the status of a problem instance in memory by checking with the central node to see if it is still active or not.
+        If the problem instance is no longer active, the agent tags it as inactive and removes it from the agent's solver.
+        
+        Args:
+            problem_instance_name: The name of the problem instance to check status for
+        """
+        self.logger.info(f"Request to check status of problem instance {problem_instance_name}...")
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/status/{problem_instance_name}")
+        if response.status_code != 200:
+            self.logger.error(f"Failed to check status of problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
+            return
+        problem_instance_info = response.json()
+        active = problem_instance_info["active"]
+        
+        if not active:
+            # Remove the problem instance from the agent's solver
+            try:
+                self.solver.remove_problem_instance(problem_instance_name)
+                self.logger.info(f"Problem instance {problem_instance_name} removed from solver")
+            except Exception as e:
+                self.logger.error(f"Error when removing problem instance from solver: {e}")
+                return
+        self.problem_instances[problem_instance_name]["active"] = active
+        self.logger.info(f"Problem instance {problem_instance_name} status updated successfully - active={active}")   # TODO: maybe exessive logging so maybe only log if status changed
+                
 
     def download_best_solution(self, problem_instance_name: str):
         """Download the best solution for a problem instance from the central node and save it to local storage."""
@@ -268,7 +286,11 @@ class AgentNode:
             return
 
         # Calculate the objective value of the best solution
-        best_obj = self.solver.get_objective_value(problem_instance_name, best_solution["solution_data"])
+        try:
+            best_obj = self.solver.get_objective_value(problem_instance_name, best_solution["solution_data"])
+        except Exception as e:
+            self.logger.error(f"Error when calculating objective value of best solution: {e}")
+            return
         
         # Update the problem instance information dictionary with the new best solution
         self.problem_instances[problem_instance_name]["best_platform_obj"] = best_obj
@@ -329,7 +351,13 @@ class AgentNode:
         # Check if agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
             self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
-            # TODO: here we can download the problem instance so that we can validate the solution - change log message to info and add download here
+            # TODO: here we can download the problem instance so that we can validate the solution - change log message to info and add download here - well maybe we don't want that
+            # actually just too keep the agent node simple and not do too much stuff automatically...
+            return
+        
+        # Check if the problem instance is still active on the platform - since validating is not so expensive we will NOT update the status but only check in memory data
+        if not self.problem_instances[problem_instance_name]["active"]:
+            self.logger.error(f"Problem instance {problem_instance_name} is no longer active on the platform")
             return
         
         # Send request to central node to validate the solution - get sent solution back from central node
@@ -449,6 +477,12 @@ class AgentNode:
             self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
             return
         
+        # Check if the problem instance is still active on the platform
+        self.update_problem_instance_status(problem_instance_name)
+        if not self.problem_instances[problem_instance_name]["active"]:
+            self.logger.error(f"Problem instance {problem_instance_name} is no longer active on the platform")
+            return
+        
         # Set the problem instance that the agent is solving
         self.solving_problem_instance_name = problem_instance_name
 
@@ -479,7 +513,7 @@ class AgentNode:
                 # with open(self.problem_instances[problem_instance_name]["best_self_sol_path"], "r") as file:
                 #     solution_data = file.read()
 
-                # Submit the solution on the platform if it is the best solution found by the agent (send request to central node)
+                # Submit the solution on the platform if it is the best solution found by the agent (send request to central node) TODO check here or in solver if best solution (or both even)
                 self.submit_solution(problem_instance_name, solution_data, obj)
 
                 # Update the agent's best solution

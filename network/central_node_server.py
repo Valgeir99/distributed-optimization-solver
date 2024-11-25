@@ -61,6 +61,9 @@ class ProblemInstanceResponse(BaseModel):
     problem_data: str | None = None   # optional field
     solution_data: str | None = None
 
+class ProblemInstanceStatusResponse(BaseModel):
+    active: bool
+
 class SolutionSubmissionRequest(BaseModel):
     solution_data: str
     objective_value: float
@@ -166,20 +169,20 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
     )
 
 
-# TODO
-# @app.get("/problem_instances/active", response_model=list[ProblemInstanceResponse])
-# def check_problem_instance_status(problem_instance_name: str) -> bool:
-#     """Check if the problem instance is active."""
-#     result = central_node.query_db(
-#         "SELECT active FROM problem_instances WHERE name = ?", (problem_instance_name,)
-#     )
-#     if result is None:
-#         # Database error
-#         raise HTTPException(status_code=500, detail="Internal server error")
-#     if not result:
-#         # No problem instance found
-#         raise HTTPException(status_code=404, detail="Problem instance not found!")
-#     return result[0]["active"]
+@app.get("/problem_instances/status/{problem_instance_name}", response_model=ProblemInstanceStatusResponse)
+def check_problem_instance_status(problem_instance_name: str) -> bool:
+    """Check if the problem instance is active."""
+    result = central_node.query_db(
+        "SELECT active FROM problem_instances WHERE name = ?", (problem_instance_name,)
+    )
+    if result is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result:
+        # No problem instance found
+        raise HTTPException(status_code=404, detail="Problem instance not found!")
+    
+    return ProblemInstanceStatusResponse(active=result[0]["active"])
 
 
 @app.post("/solutions/upload/{problem_instance_name}", response_model=SolutionSubmissionResponse)
@@ -287,6 +290,9 @@ async def download_best_solution(problem_instance_name: str):
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
+    if result[0]["active"] == False:
+        # Problem instance is not active
+        raise HTTPException(status_code=404, detail="Problem instance is not active!")
     
     # Get the best solution for the problem instance
     result = central_node.query_db(
@@ -355,8 +361,6 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
         # No active solution submission found
         raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!")
     solution_submission_id = result[0]["id"]
-
-    print("There is something in the database", solution_submission_id)
 
     # Get solution data from in memory data structure
     solution_submission = central_node.active_solution_submissions.get(solution_submission_id)

@@ -6,6 +6,7 @@ from typing import Tuple
 import time
 #from scipy.sparse import csr_matrix
 
+# NOTE: since agents will be able to change the state of the solver we need to make sure to always check the state of the solver before we do anything with self.problem_data
 
 class ProblemDataParsed(TypedDict):
     """BIP problem data parsed from .mps file to a format suitable for the solver."""
@@ -174,6 +175,21 @@ class BIPSolver:
             }
         except Exception as e:
             raise Exception(f"Error adding problem instance: {e}") from e
+        
+
+    def remove_problem_instance(self, problem_instance_name: str):
+        """
+        Removes a problem instance from the solver.
+        
+        Args: 
+            problem_instance_name: name of the problem instance
+        Raises:
+            Exception: if the problem instance does not exist in the solver
+        """
+        if problem_instance_name not in self.problem_data:
+            raise ValueError(f"Problem instance '{problem_instance_name}' not found in solver.")
+        
+        del self.problem_data[problem_instance_name]
 
     
     def _generate_random_bip_solution(self, problem_instance_name) -> Tuple[bool, np.array, float]:
