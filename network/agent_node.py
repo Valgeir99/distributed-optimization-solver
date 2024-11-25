@@ -408,9 +408,9 @@ class AgentNode:
             if feasible:
                 # Compare the objective value with the agent's best known solution - NOTE: ASSUME ONLY MINIMIZATION PROBLEMS
                 valid = False
-                if self.problem_instances[problem_instance_name]["best_platform_obj"] is None or obj_value < self.problem_instances[problem_instance_name]["best_self_obj"]:
+                if self.problem_instances[problem_instance_name]["best_platform_obj"] is None or obj_value < self.problem_instances[problem_instance_name]["best_platform_obj"]:
                     valid = True
-                self.logger.info(f"Solution is feasible! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_self_obj"]}")
+                self.logger.info(f"Solution is feasible! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_platform_obj"]}")
                 return valid, obj_value
             else:
                 self.logger.info("Solution is not feasible")
