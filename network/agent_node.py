@@ -7,7 +7,8 @@ import random
 import logging
 from dotenv import load_dotenv
 from config import AGENT_DATA_DIR, LOG_FILE_PATH
-import solver.solver_python as solver
+
+from solver.bip_solver import BIPSolver
 
 # Load environment variables from .env file
 load_dotenv()
@@ -37,6 +38,13 @@ class ProblemInstanceInfo(TypedDict):
     # Do we actually want to use flags to indicate if this problme instance is being solved or not? and also if it is being validated or not?
 
 
+# Some design NOTE:
+# - Code not designed to be run in a multi-threaded environment (would need to add locks for shared data if multiple threads)
+# - The agent needs to download problem instance before he can do anything with it (solve, validate, get objective value of solution etc.)
+# - The agent can only solve one problem instance at a time (but can store multiple problem instances)
+# - The agent assumes minimization problems (and solver as well)
+# - The agent and solver are seperate entities BUT they need to have access to the same local file storage
+
 class AgentNode:
     # TODO: fix
     """An agent node that knows endpoints of central node web server and can communicate through there. 
@@ -65,8 +73,7 @@ class AgentNode:
         self.central_node_port = CENTRAL_NODE_PORT
 
         # Folder to store all agent data
-        #self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.name}"
-        self.agent_data_path = f"../data/agent_data/agent_{self.name}"
+        self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.name}"
         os.makedirs(self.agent_data_path, exist_ok=True)
 
         # Problem instances
@@ -88,6 +95,9 @@ class AgentNode:
 
         # Active solution submissions - agent keeps track of the solution submissions that are still pending
         #self.active_solution_submission_ids: Set[str] = set()  # NOTE: he does it in the problem instance info
+
+        # Solver
+        self.solver = BIPSolver()
 
         # TODO: might want to use try-except here to see if agent started correctly or not - because maybe we don't want to use exist_ok=True for the directories since they should be 
         # empty on initialization (but likely there will be agents with same id started previously so maybe we just make the dir and delete everything in it if it exists?)
@@ -177,7 +187,7 @@ class AgentNode:
                 with open(best_platform_sol_path, "w") as file:
                     file.write(problem_instance["solution_data"])
                 # Get the objective value of the best solution
-                best_platform_obj = solver.get_objective_value_bip_solution(f"{self.problem_instances_path}/{problem_instance_name}.mps", best_platform_sol_path)
+                best_platform_obj = self.solver.get_objective_value(problem_instance_name, problem_instance["solution_data"])
         except Exception as e:
             print(f"Error when saving problem instance best solution to local storage and calculating objective: {e}")
             return
@@ -193,7 +203,7 @@ class AgentNode:
             self.problem_instances[problem_instance_name] = {
                 "name": problem_instance_name,
                 "description": problem_instance["description"],
-                "instance_file_path": f"{self.problem_instances_path}/{problem_instance_name}.mps",
+                "instance_file_path": problem_instance_file_path,
                 "best_platform_obj": best_platform_obj,
                 "best_self_obj": None,
                 "best_platform_sol_path": best_platform_sol_path,
@@ -201,12 +211,25 @@ class AgentNode:
                 "reward_accumulated": 0,
                 "active_solution_submission_ids": set()
             }
-            self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully for the first time!")
+
+            try:
+                # Add the problem instance to the solver
+                self.solver.add_problem_instance(problem_instance_file_path)
+            except Exception as e:
+                self.logger.error(f"Error when adding problem instance to solver: {e}")
+                return
+
+            message = f"Problem instance {problem_instance_name} downloaded successfully for the first time!"
         else:
             # Update the problem instance information dictionary - only update if solution data came with the download
             if problem_instance["solution_data"]:
                 self.problem_instances[problem_instance_name]["best_platform_obj"] = best_platform_obj
-            self.logger.info(f"Problem instance {problem_instance_name} downloaded successfully (this problem instance was already stored by the agent)")
+            message = f"Problem instance {problem_instance_name} downloaded successfully (this problem instance was already stored by the agent)!"
+
+        if problem_instance["solution_data"]:
+            message += f"... and its best solution as well with objective value {best_platform_obj}"
+
+        self.logger.info(message)
 
 
     # TODO
@@ -245,7 +268,7 @@ class AgentNode:
             return
 
         # Calculate the objective value of the best solution
-        best_obj = solver.get_objective_value_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], best_platform_sol_path)
+        best_obj = self.solver.get_objective_value(problem_instance_name, best_solution["solution_data"])
         
         # Update the problem instance information dictionary with the new best solution
         self.problem_instances[problem_instance_name]["best_platform_obj"] = best_obj
@@ -313,7 +336,6 @@ class AgentNode:
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/download/{problem_instance_name}")
         if response.status_code != 200:
             self.logger.error(f"Failed to validate a solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
-            print(f"Error: {response.status_code} {response.text}")
             return
         solution = response.json()
 
@@ -382,14 +404,16 @@ class AgentNode:
             return False, -1
         
         try:
-            feasible, obj_value = solver.validate_feasibility_bip_solution(self.problem_instances[problem_instance_name]["instance_file_path"], solution_data)
+            feasible, obj_value = self.solver.validate(problem_instance_name, solution_data)
             if feasible:
                 # Compare the objective value with the agent's best known solution - NOTE: ASSUME ONLY MINIMIZATION PROBLEMS
-                if self.problem_instances[problem_instance_name]["best_plat"] is None or obj_value < self.problem_instances[problem_instance_name]["best_self_obj"]:
-                    return True, obj_value
-                else:
-                    return False, -1
+                valid = False
+                if self.problem_instances[problem_instance_name]["best_platform_obj"] is None or obj_value < self.problem_instances[problem_instance_name]["best_self_obj"]:
+                    valid = True
+                self.logger.info(f"Solution is feasible! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_self_obj"]}")
+                return valid, obj_value
             else:
+                self.logger.info("Solution is not feasible")
                 return False, -1
         except Exception as e:
             self.logger.error(f"Error when validating solution: {e}")
@@ -417,12 +441,12 @@ class AgentNode:
         self.logger.info(f"Starting to solve problem instance {problem_instance_name}...")
         # Check if the agent is already solving a problem instance
         if self.solving_problem_instance_name:
-            self.logger.error(f"Error: Agent is already solving problem instance {self.solving_problem_instance_name}")
+            self.logger.error(f"Agent is already solving problem instance {self.solving_problem_instance_name}")
             return
 
         # Check if the agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
-            self.logger.error(f"Error: Agent does not have problem instance {problem_instance_name} stored")
+            self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
             return
         
         # Set the problem instance that the agent is solving
@@ -442,7 +466,7 @@ class AgentNode:
                 # This takes a long time so we should run it on a seperate thread or process
                 #solution_thread = threading.Thread(target=solver.solve_bip, args=(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"]))
                 #solution_thread.start()
-                sol_found, solution_data, obj = solver.solve_bip(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_self_sol_path")
+                sol_found, solution_data, obj = self.solver.solve(problem_instance_name, self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_platform_sol_path")   # TODO: change or fix "best_platform_sol_path" to be the correct path
             except Exception as e:
                 self.logger.error(f"Error when solving problem instance {problem_instance_name}: {e}")   # TODO: not sure how we want to log solver errors - if doing properly we would need to raise exception in the solver and catch it here
                 self.solving_problem_instance_name = None
@@ -462,6 +486,10 @@ class AgentNode:
                 self.problem_instances[problem_instance_name]["best_self_obj"] = obj
 
                 # TODO: would also make sense to save to file here but I think I already did that in the solver so maybe we should change that for consistency!
+
+            else:
+                # TODO
+                pass
 
         
         # After loop is done, set the solving problem instance to None
