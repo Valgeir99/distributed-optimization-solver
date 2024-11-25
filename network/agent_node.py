@@ -5,8 +5,9 @@ import shutil
 import os
 import random
 import logging
+import csv
 from dotenv import load_dotenv
-from config import AGENT_DATA_DIR, LOG_FILE_PATH
+from config import AGENT_DATA_DIR, LOG_FILE_PATH, AGENT_REWARDS_DIR
 
 from solver.bip_solver import BIPSolver
 
@@ -401,10 +402,6 @@ class AgentNode:
                     self.logger.error(f"Error when saving best solution to local storage: {e}")
                     return
                 self.logger.info(f"Agent has now updated the platform's best solution for problem instance {problem_instance_name} with objective value {objective_value}")
-       
-        # TODO: here or create new request to check if the problem instance is still active or not (because if inactive on the platform 
-        # we should remove it form the agent's problem instances. Also if the agent is solving this problem we would need to stop the
-        # solver maybe if possible but could be complicated...)
 
         self.logger.info(f"Solution submission {solution_submission_id} for problem instance {problem_instance_name} validated successfully and agent collected reward ({solution_response["reward"]} coins).")
 
@@ -562,15 +559,32 @@ class AgentNode:
 
 
     def clean_up(self):
-        """Clean up the agent node."""
+        """Clean up the agent node. Delete all agent data stored in local storage.
+        Save reward accumulated found by agent to a file."""
+
+        self.logger.info("Cleaning up agent node...")
+
+        # Begin to check solution submission status for all active solution submissions - to collect rewards before quitting
+        for problem_instance_name in self.problem_instances_ids:
+            solution_submission_ids = self.problem_instances[problem_instance_name]["active_solution_submission_ids"].copy()
+            for solution_submission_id in solution_submission_ids:
+                self.check_submit_solution_status(solution_submission_id)
+
         # Delete the agent data folder
         shutil.rmtree(self.agent_data_path, onexc=AgentNode._remove_readonly)
+
+        # Save the reward accumulated by the agent to a file
+        with open(f"{AGENT_REWARDS_DIR}/agent_{self.name}_rewards.csv", "w", newline="") as file:
+            writer = csv.writer(file)
+            for problem_instance_name in self.problem_instances_ids:
+                writer.writerow([problem_instance_name, self.problem_instances[problem_instance_name]["reward_accumulated"]])
 
         # Log some agent information
         msg = ""
         for problem_instance_name in self.problem_instances_ids:
-            msg += f"For problem instance {problem_instance_name}:\n - Best solution found by agent: {self.problem_instances[problem_instance_name]['best_self_obj']}\n \
-            - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']}\n"
+            msg += f"For problem instance {problem_instance_name}:\n - Best solution found by agent: {self.problem_instances[problem_instance_name]['best_self_obj']} \
+            \n - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']}"
 
+        self.logger.info(msg)
         self.logger.info(f"Agent node cleaned up")
 
