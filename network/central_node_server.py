@@ -1,5 +1,5 @@
 """
-Central node server for distributed optimization solver.
+Central node server for distributed optimization solver. Starts a FastAPI server which is the web server for the central node.
 """
 
 # To run as module from root folder: python -m network.central_node_server
@@ -16,19 +16,13 @@ from .central_node import CentralNode
 
 # Load environment variables from .env file
 load_dotenv()
-SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCECCFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
+SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCESSFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
 SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
-
-# Other constants
-RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose from when selecting a problem instance for an agent
-
-
 
 # Create FastAPI application and put it in the central node class
 app = FastAPI()
 central_node = CentralNode(app)
 server = None
-
 
 def start_server():
     """Start the server using uvicorn's Server class."""
@@ -44,8 +38,6 @@ def start_server():
 
 def stop_server():
     """Stop the server gracefully."""
-    # Save the database
-    central_node.save_db()
     # Stop the central node
     central_node.stop()
     if server and server.should_exit is False:
@@ -53,7 +45,7 @@ def stop_server():
     print("Central node server stopped")
 
 
-## Dataclasses for the messages - agents need to follow these schemas when sending requests / receiving responses
+##--- Dataclasses for the messages - agents need to follow these schemas when sending requests / receiving responses   ---##
 
 class ProblemInstanceResponse(BaseModel):
     name: str
@@ -88,15 +80,16 @@ class SolutionValidationRequest(BaseModel):
     response: bool   # True if solution is accepted, False otherwise
     objective_value: float   # objective value of the solution
 
-## Routes for the central node server
-# Revised enpoint urls to be more descriptive: https://chatgpt.com/c/67335c94-2fd0-8003-8cb5-77a97f76137c
+
+##---- Routes for the central node server ---##
+# TODO: possibly rename enpoint urls to be more descriptive: https://chatgpt.com/c/67335c94-2fd0-8003-8cb5-77a97f76137c
 
 @app.get("/problem_instances/info", response_model=list[ProblemInstanceResponse])
 async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
-    """Agent requests information about a pool of problem instances."""
-    # Get a pool of random problem instances from the database
-    problem_instances = central_node.query_db("SELECT * FROM problem_instances WHERE active = TRUE ORDER BY RANDOM() LIMIT ?", (RANDOM_PROBLEM_INSTANCE_POOL_SIZE,))
-    
+    """Agent requests information about a pool of problem instances so he can download one (or more) 
+    of them later. Returns a list of problem instances with their names and descriptions."""
+    # Get a pool of random problem instances from the central node database
+    problem_instances = central_node.get_pool_of_problem_instances()
     if problem_instances is None:
         # Database error
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -112,7 +105,8 @@ async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
 
 @app.get("/problem_instances/download/{problem_instance_name}", response_model=ProblemInstanceResponse)
 async def get_problem_instance_data_by_id(problem_instance_name: str) -> ProblemInstanceResponse:
-    """Agent requests a problem instance to download. Rteturns the problem instance data and solution if available."""
+    """Agent requests a problem instance to download. Returns the problem instance data and best 
+    solution on the platform if available."""
     # Check if problem instance exists
     result = central_node.query_db(
         "SELECT * FROM problem_instances WHERE name = ?", (problem_instance_name,)
@@ -126,7 +120,6 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
     if result[0]["active"] == False:
         # Problem instance is not active
         raise HTTPException(status_code=404, detail="Problem instance is not active!")
-    
     problem_instance = result[0]
 
     # Get problem instance data from file storage
@@ -171,7 +164,8 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
 
 @app.get("/problem_instances/status/{problem_instance_name}", response_model=ProblemInstanceStatusResponse)
 def check_problem_instance_status(problem_instance_name: str) -> bool:
-    """Check if the problem instance is active."""
+    """Agent checks if the problem instance is active. Returns True if the problem instance is active,
+    False otherwise."""
     result = central_node.query_db(
         "SELECT active FROM problem_instances WHERE name = ?", (problem_instance_name,)
     )
@@ -189,7 +183,7 @@ def check_problem_instance_status(problem_instance_name: str) -> bool:
 async def upload_solution(problem_instance_name: str, solution: SolutionSubmissionRequest) -> SolutionSubmissionResponse:
     """Agent uploads a solution to a problem instance to the platform - the solution will be available for validation 
     by other agents for limited time to determine if the solution is best one on platform or not (agents need to reach 
-    consensus)."""
+    consensus). Returns some metadata about the solution submission."""
 
     # Check if problem instance exists and is active
     result = central_node.query_db(
@@ -209,9 +203,6 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
     # Start the solution validation phase (on different thread) for this solution submission
     solution_submission_id = central_node.generate_id()
     central_node.start_solution_validation_phase(problem_instance_name, solution_submission_id, solution.solution_data, solution.objective_value)
-
-    # DEBUG - print the active solution submissions
-    #print("active solution submissions after upload new solution", central_node.active_solution_submissions)
 
     # Get solution submission data from the database
     result = central_node.query_db(
@@ -233,11 +224,12 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
     )
 
 
+# NOTE: agents could actually check solution submissions of other agents (and "claim" the reward even though they don't get any reward it is just for bookkeeping 
+# in this proof of concept so it does not matter)
 @app.get("/solutions/status/{solution_submission_id}", response_model=SolutionSubmissionResponse)
 async def get_solution_submission_status(solution_submission_id: str) -> SolutionSubmissionResponse:
-    """Agent requests the status of a solution submission."""
-    # Return the status of the solution submission and reward value (if the solution has been validated otherwise reward value is None)
-    
+    """Agent requests the status of a solution submission. Returns the status of the solution submission and
+    the reward value (if the solution has been validated)."""    
     # Check if solution submission exists
     result = central_node.query_db(
         "SELECT * FROM all_solutions WHERE id = ?", (solution_submission_id,)
@@ -250,8 +242,7 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
         raise HTTPException(status_code=404, detail="Solution submission id not found!")
     solution_submission = result[0]
 
-    # Check if solution submission is active (TODO: here we could either use database or central node in memory data structure - not really sure which one to use honestly
-    # throughout the code. If we use in memory here then we would need to check if the solution submission exists since we delete it after it is validated)
+    # Check if solution submission is active
     if solution_submission["accepted"] is None:
         # Solution submission is still being validated
         return SolutionSubmissionResponse(
@@ -278,7 +269,8 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
 
 @app.get("/solutions/best/download/{problem_instance_name}", response_model=SolutionDataResponse)
 async def download_best_solution(problem_instance_name: str):
-    """Agent requests to download the best solution for a specific problem instance."""
+    """Agent requests to download the best solution for a specific problem instance. 
+    Returns the best solution data if available."""
 
     # Check if problem instance exists
     result = central_node.query_db(
@@ -326,7 +318,7 @@ async def download_best_solution(problem_instance_name: str):
 @app.get("/solutions/validate/download/{problem_instance_name}", response_model=SolutionDataResponse)
 async def download_solution_by_problem_instance_id(problem_instance_name: str):
     """Agent requests to download a solution to a specific problem instance (to validate it).
-    Central node will return the oldest active solution submission that has more than 30 seconds left for validation."""
+    Returns the oldest active solution submission that has more than 30 seconds left for validation."""
 
     # Check if problem instance exists
     result = central_node.query_db(
@@ -342,18 +334,8 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
         # Problem instance is not active
         raise HTTPException(status_code=404, detail="Problem instance is not active!")
 
-    # Get the oldest active solution submission for the problem instance that has more than 30 seconds left for validation
-    # TODO: Also don't want to give out solutions that this agent has already validated...
-    cutoff_time = datetime.now() + timedelta(seconds=5)
-    result = central_node.query_db(
-        """SELECT id FROM all_solutions 
-            WHERE problem_instance_name = ? 
-                AND accepted IS NULL 
-                AND validation_end_time >= ?
-            ORDER BY submission_time ASC LIMIT 1
-        """
-        , (problem_instance_name, cutoff_time)
-    )
+    # Get a solution submission id
+    result = central_node.get_solution_submission_id(problem_instance_name)
     if result is None:
         # Database error
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -381,10 +363,10 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
 
 # NOTE: there is nothing preventing agents to validate the same solution multiple times... (but I guess we don't 
 # care about that in proof of concept TODO yes I think we should try to fix and also prevent agent who submitted the solution to validate it)
-# NOTE: Here we need to use solution submission id since we could have many solution submissions for the same problem instance
 @app.post("/solutions/validate/{solution_submission_id}", response_model=SolutionValidationResponse)
 async def validate_solution(solution_submission_id: str, solution_validation_result: SolutionValidationRequest) -> SolutionValidationResponse:
-    """Agent sends solution validation result to central node for a specific solution submission."""
+    """Agent sends solution validation result to central node for a specific solution submission. 
+    Returns the reward for the agent who validated the solution."""
     # Check if the solution submission exists
     result = central_node.query_db(
         "SELECT * FROM all_solutions WHERE id = ?", (solution_submission_id,)
@@ -401,15 +383,29 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
     if solution_submission["accepted"] is not None:
         # Solution submission is already validated
         raise HTTPException(status_code=400, detail="Solution submission has already been validated by the platform!")
-    
-    # NOTE: we don't need to check if this problem instance is active becasue in current design the reward can 
-    # go over budget so we will always finish all solution submissions that where requested before the reward was finished
-
-    # Double check if the solution submission is still active (using in memory data structure) TODO: not sure if we want/need this
-    solution_submission = central_node.active_solution_submissions.get(solution_submission_id)
+    # NOTE: Double check if the solution submission is still active (using in memory data structure) - we are using locking 
+    # when finalizing the solution validation phase so there the database and in memory data structure are updated atomically
+    # However! there might be a small chance that database says inactive but it still exists in memory when we update 
+    # the database in the loop of the solution validation phase
+    solution_submission = central_node.active_solution_submissions.get(solution_submission_id)   # TODO: or what?????????? We are inserting in database in manage and not in memory...
     if solution_submission is None:
         # Solution submission not found (so it has already been validated)
         raise HTTPException(status_code=400, detail="Solution submission has already been validated by the platform!")
+
+    # Check if the problem instance is active
+    problem_instance_name = solution_submission["problem_instance_name"]
+    result = central_node.query_db(
+        "SELECT active FROM problem_instances WHERE name = ?", (problem_instance_name,)
+    )
+    if result is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result:
+        # No problem instance found
+        raise HTTPException(status_code=404, detail="Problem instance not found!")
+    if result[0]["active"] == False:
+        # Problem instance is not active
+        raise HTTPException(status_code=404, detail="Problem instance is not active!")
 
     # Update the solution submission
     with central_node.lock:
@@ -417,31 +413,19 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
         solution_submission["objective_values"].append(solution_validation_result.objective_value)
         solution_submission["reward_accumulated"] += SOLUTION_VALIDATION_REWARD
 
-    # DEBUG: print the active solution submissions
-    #print("active solution submissions after validation", central_node.active_solution_submissions)
-
     return SolutionValidationResponse(reward=SOLUTION_VALIDATION_REWARD)
     
     
-
 @app.get("/solutions/validate")
 async def validate_any_solution():
     """Agent requests to validate any solution available on the platform."""
     pass
     
-    
-
-
-# TODO: possibly have some methods for the central node to do the stuff above like 
-# getting problem instance info and so on
-# For example if I have some data structure that holds the problem instances and their information
-# inside the central node class then I could have a method that returns the problem instances info
-# Yes that is probably better since like the data and how the sqlite is configured is not 
-# visbible here but only in the central node class
 
 if __name__ == "__main__":
     try:
         uvicorn.run(app, host=central_node.host, port=central_node.port)
+        # TODO: we will probably need to make host=0.0.0.0 to make it accessible from outside when running on hpc and then give agents the ip address of the host running the central node server
     except KeyboardInterrupt:
         pass
     finally:

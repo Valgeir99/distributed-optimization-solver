@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import SCHEMA_PATH, DATA_PATH
 
 # Function to create a new database after tearing down the old one
-def create_database(db_path):
+def create_and_init_database(db_path):
     try:
         # Tear down the existing database if it exists
         teardown_database(db_path)
@@ -72,7 +72,7 @@ def query_db(connection, query, params=()):
 
 # Example usage
 if __name__ == "__main__":
-    create_database('central_node.db')
+    create_and_init_database('central_node.db')
     connection = connect_to_database('central_node.db')
     result = query_db(connection, "SELECT * FROM problem_instances")
     print(result)
