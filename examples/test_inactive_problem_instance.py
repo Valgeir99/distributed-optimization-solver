@@ -4,7 +4,12 @@ import os
 import threading
 from dotenv import load_dotenv
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Change the working directory to the root of the project
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(project_root)  # This changes the CWD to the root of the project
+# Add the project root to sys.path to ensure Python can find the 'network' package
+sys.path.append(project_root)
+
 from network.agent_node import AgentNode
 from network.central_node_server import start_server, stop_server
 
