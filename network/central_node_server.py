@@ -28,7 +28,7 @@ def start_server():
     """Start the server using uvicorn's Server class."""
     global server
     print("Central node server started")
-    config = uvicorn.Config(app, host=central_node.host, port=central_node.port, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=central_node.port, log_level="info")
     server = uvicorn.Server(config)
     
     # Run the server in a separate thread
@@ -92,7 +92,7 @@ async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
     problem_instances = central_node.get_pool_of_problem_instances()
     if problem_instances is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not problem_instances:
         # No problem instances in the database
         raise HTTPException(status_code=404, detail="No problem instances available on the central node!")
@@ -113,7 +113,7 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
@@ -129,10 +129,10 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
             with open(problem_instance["file_location"], "r") as file:
                 problem_data = file.read()
         except Exception as e:
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise HTTPException(status_code=500, detail="File read error")
     if problem_data is None:
         # File not found
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="File not found error")
 
     # Check where the solution is stored
     result = central_node.query_db(
@@ -140,7 +140,7 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     
     # Get the solution data if it exists
     solution_data = None
@@ -152,7 +152,7 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
                 with open(solution_location, "r") as file:
                     solution_data = file.read()
             except Exception as e:
-                raise HTTPException(status_code=500, detail="Internal server error")
+                raise HTTPException(status_code=500, detail="File read error")
 
     return ProblemInstanceResponse(
         name=problem_instance["name"],
@@ -171,7 +171,7 @@ def check_problem_instance_status(problem_instance_name: str) -> bool:
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
@@ -191,7 +191,7 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
@@ -210,7 +210,7 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # Solution submission not found
         raise HTTPException(status_code=404, detail="Solution submission id not found!")
@@ -236,7 +236,7 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # Solution submission not found
         raise HTTPException(status_code=404, detail="Solution submission id not found!")
@@ -278,7 +278,7 @@ async def download_best_solution(problem_instance_name: str):
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
@@ -292,7 +292,7 @@ async def download_best_solution(problem_instance_name: str):
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No best solution found
         raise HTTPException(status_code=404, detail="No best solution found for the problem instance!")
@@ -304,7 +304,7 @@ async def download_best_solution(problem_instance_name: str):
             with open(best_solution_location, "r") as file:
                 best_solution_data = file.read()
         except Exception as e:
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise HTTPException(status_code=500, detail="File read error")
     else:
         # File not found
         raise HTTPException(status_code=404, detail="File containing best solution not found!")
@@ -326,7 +326,7 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
@@ -338,7 +338,7 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
     result = central_node.get_solution_submission_id(problem_instance_name)
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No active solution submission found
         raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!")
@@ -348,11 +348,11 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
     solution_submission = central_node.active_solution_submissions.get(solution_submission_id)
     if solution_submission is None:
         # No solution submission in memory for this solution submission id
-        raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!!")
+        raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!")
     solution_data = solution_submission["solution_data"]
     if solution_data is None:
         # Solution data not found
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Solution data not found in memory for solution submission!")
 
     return SolutionDataResponse(
         problem_instance_name=problem_instance_name,
@@ -373,7 +373,7 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # Solution submission not found
         raise HTTPException(status_code=404, detail="Solution submission id not found!")
@@ -399,7 +399,7 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
     )
     if result is None:
         # Database error
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No problem instance found
         raise HTTPException(status_code=404, detail="Problem instance not found!")
@@ -424,8 +424,7 @@ async def validate_any_solution():
 
 if __name__ == "__main__":
     try:
-        uvicorn.run(app, host=central_node.host, port=central_node.port)
-        # TODO: we will probably need to make host=0.0.0.0 to make it accessible from outside when running on hpc and then give agents the ip address of the host running the central node server
+        uvicorn.run(app, host="0.0.0.0", port=central_node.port)
     except KeyboardInterrupt:
         pass
     finally:
