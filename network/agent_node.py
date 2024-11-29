@@ -6,8 +6,9 @@ import os
 import random
 import logging
 import csv
+import json
 from dotenv import load_dotenv
-from config import AGENT_DATA_DIR, LOG_FILE_PATH, AGENT_REWARDS_DIR
+from config import AGENT_DATA_DIR, EXPERIMENT_DIR
 
 from solver.bip_solver import BIPSolver
 
@@ -16,8 +17,13 @@ load_dotenv()
 CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = os.getenv("CENTRAL_NODE_PORT")
 
+# Experiment configuration
+EXPERIMENT_DATA_DIR = None
+LOG_FILE_PATH = None
+AGENT_REWARDS_DIR = None
+
 # Other constants
-SOLVE_ITERATIONS = 1   # number of times to run the solver for each problem instance when solving
+SOLVE_ITERATIONS = 1   # number of times to run the solver for each problem instance when solving TODO if we use this then move to experiment file
 
 
 class ProblemInstanceInfo(TypedDict):
@@ -46,6 +52,7 @@ class ProblemInstanceInfo(TypedDict):
 # - The agent can only solve one problem instance at a time (but can store multiple problem instances)
 # - The agent assumes minimization problems (and solver as well)
 # - The agent and solver are seperate entities BUT they need to have access to the same local file storage
+# - Solving strategy TODO
 
 class AgentNode:
     # TODO: fix
@@ -59,6 +66,9 @@ class AgentNode:
 
     def __init__(self, name: str):
         """Initialize the node with name."""
+
+         # Experiment configuration
+        self._load_experiment_config()
 
         # Agent has a name (for logging purposes)
         self.name = str(name)
@@ -74,29 +84,28 @@ class AgentNode:
         self.central_node_host = CENTRAL_NODE_HOST
         self.central_node_port = CENTRAL_NODE_PORT
 
-        # Folder to store all agent data
+        # Folder to store all temporary agent data for each run of the agent
         self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.name}"
-        os.makedirs(self.agent_data_path, exist_ok=True)
+        if os.path.exists(self.agent_data_path):
+            shutil.rmtree(self.agent_data_path, onexc=AgentNode._remove_readonly)
+        os.makedirs(self.agent_data_path, exist_ok=False)   # we don't want to use exist_ok=True here since we want to start with an empty directory
 
         # Problem instances
         self.problem_instances_ids: Set[str] = set()  
         self.problem_instances: Dict[str, ProblemInstanceInfo] = dict()   # key is problem instance id and value is a dictionary with problem instance information
         self.problem_instances_path = f"{self.agent_data_path}/problem_instances"
-        os.makedirs(self.problem_instances_path, exist_ok=True)
+        os.makedirs(self.problem_instances_path, exist_ok=False)
 
         # Problem instance that the agent is solving (for this proof of concept the agent is only solving one problem instance at a time) - if None then the agent is not solving any problem instance
         self.solving_problem_instance_name: str | None = None
 
         # Best solutions - agent keeps track of the best solutions on the platform (to aid with solving)
         self.best_platfrom_solutions_path = f"{self.agent_data_path}/best_platform_solutions"
-        os.makedirs(self.best_platfrom_solutions_path, exist_ok=True)
+        os.makedirs(self.best_platfrom_solutions_path, exist_ok=False)
 
         # Best solutions - agent keeps track of the best solutions found by itself
         self.best_self_solutions_path = f"{self.agent_data_path}/best_self_solutions"
-        os.makedirs(self.best_self_solutions_path, exist_ok=True)
-
-        # Active solution submissions - agent keeps track of the solution submissions that are still pending
-        #self.active_solution_submission_ids: Set[str] = set()  # NOTE: he does it in the problem instance info
+        os.makedirs(self.best_self_solutions_path, exist_ok=False)
 
         # Solver
         self.solver = BIPSolver()
@@ -104,6 +113,16 @@ class AgentNode:
         # TODO: might want to use try-except here to see if agent started correctly or not - because maybe we don't want to use exist_ok=True for the directories since they should be 
         # empty on initialization (but likely there will be agents with same id started previously so maybe we just make the dir and delete everything in it if it exists?)
 
+
+    def _load_experiment_config(self):
+        """Load the experiment configuration that central node created from the config file."""
+        global THIS_EXPERIMENT_DATA_DIR, LOG_FILE_PATH, AGENT_REWARDS_DIR
+        with open(os.path.join(EXPERIMENT_DIR, "experiment_config.json"), "r") as f:
+            config = json.load(f)
+        THIS_EXPERIMENT_DATA_DIR = config["THIS_EXPERIMENT_DATA_DIR"]
+        LOG_FILE_PATH = config["LOG_FILE_PATH"]
+        AGENT_REWARDS_DIR = config["AGENT_REWARDS_DIR"]
+    
 
     def _setup_logger(self) -> logging.Logger:
         """Set up the logger for the agent node."""
@@ -583,7 +602,7 @@ class AgentNode:
         msg = ""
         for problem_instance_name in self.problem_instances_ids:
             msg += f"For problem instance {problem_instance_name}:\n - Best solution found by agent: {self.problem_instances[problem_instance_name]['best_self_obj']} \
-            \n - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']}"
+            \n - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']} \n"
 
         self.logger.info(msg)
         self.logger.info(f"Agent node cleaned up")

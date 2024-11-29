@@ -1,17 +1,22 @@
 import sqlite3
 import threading
 from fastapi import FastAPI
-import uvicorn
 from dotenv import load_dotenv
 import os
+import shutil
 import time
 from datetime import datetime, timedelta
 from typing import TypedDict, Dict
 import uuid
 import logging
+import json
 
 from utils.database_utils import create_and_init_database, teardown_database
-from config import DB_PATH, BEST_SOLUTIONS_DIR, LOG_FILE_PATH
+from config import CENTRAL_DATA_DIR, DB_PATH, BEST_SOLUTIONS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
+
+# Experiment configuration
+THIS_EXPERIMENT_DATA_DIR = None
+LOG_FILE_PATH = None
 
 # Load environment variables from .env file
 load_dotenv()
@@ -98,17 +103,15 @@ class CentralNode:
     def __init__(self, web_server: FastAPI):
         """Initialize the central node with a web server and initialize and connect to the database."""
 
-        # Logger
-        self.logger = self.__setup_logger()
-        self.logger.info("Central node started")
-
         self.host = CENTRAL_NODE_HOST
         self.port = CENTRAL_NODE_PORT
 
-        # Database
-        self.db_path = DB_PATH
-        create_and_init_database(self.db_path)
-        self.db_connection = self.__connect_to_database()
+        # Setup the experiment
+        self.__setup_experiment()
+
+        # Logger
+        self.logger = self.__setup_logger()
+        self.logger.info("Central node started")
 
         # Web server
         self.web_server = web_server
@@ -118,11 +121,48 @@ class CentralNode:
 
         # Solution submissions that are currently being validated
         self.active_solution_submissions: Dict[str, SolutionSubmissionInfo] = dict()   # key is solutions submission id and value is a dictionary with solution submission information
-             
-        # Best solutions folder path
+
+        # Folder to store all temporary central node data for each run - create new folder for each run
+        if os.path.exists(CENTRAL_DATA_DIR):
+            shutil.rmtree(CENTRAL_DATA_DIR, onexc=CentralNode._remove_readonly)
+        os.makedirs(CENTRAL_DATA_DIR, exist_ok=False)
+
+        # Best solutions temp folder - create new folder for each run for central node to store best solutions
         self.best_solutions_folder = BEST_SOLUTIONS_DIR
-        if not os.path.exists(self.best_solutions_folder):
-            os.makedirs(self.best_solutions_folder)
+        os.makedirs(self.best_solutions_folder, exist_ok=False)
+
+        # Database
+        self.db_path = DB_PATH
+        create_and_init_database(self.db_path)
+        self.db_connection = self.__connect_to_database()
+
+
+    def __setup_experiment(self):
+        """Setup the experiment configuration for central node and agents. Creates the directory for the experiment 
+        data and log file. Saves the paths to a shared json file for agents to access."""
+        global THIS_EXPERIMENT_DATA_DIR, LOG_FILE_PATH
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Create a new directory for the experiment with current timestamp
+        THIS_EXPERIMENT_DATA_DIR = os.path.join(EXPERIMENT_DATA_DIR, f'experiment_{timestamp}')
+        os.makedirs(THIS_EXPERIMENT_DATA_DIR, exist_ok=False)   # fail if directory already exists
+
+        # Create a directory for storing agent rewards - this is folder agents will upload their rewards to after the experiment
+        agent_rewards_dir = os.path.join(THIS_EXPERIMENT_DATA_DIR, 'agent_rewards')
+        os.makedirs(agent_rewards_dir, exist_ok=False)
+        
+        # Create a new log file for this run - this is where all logs will be stored (also logs from agents)
+        LOG_FILE_PATH = os.path.join(THIS_EXPERIMENT_DATA_DIR, f'log_{timestamp}.log')
+        open(LOG_FILE_PATH, 'w').close()
+
+        # Save paths to a shared json file for agent nodes to access
+        shared_config = {
+            "THIS_EXPERIMENT_DATA_DIR": THIS_EXPERIMENT_DATA_DIR,
+            "AGENT_REWARDS_DIR": agent_rewards_dir,
+            "LOG_FILE_PATH": LOG_FILE_PATH,
+        }
+        with open(os.path.join(EXPERIMENT_DIR, 'experiment_config.json'), 'w') as f:
+            json.dump(shared_config, f, indent=4)
 
 
     def __setup_logger(self) -> logging.Logger:
@@ -200,9 +240,8 @@ class CentralNode:
        
 
     def __save_db(self):
-        """Save the working database to a file with a timestamp."""
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        backup_db_path = f"{self.db_path}_{timestamp}"
+        """Save the working database to the experiment folder for this run."""
+        backup_db_path = f"{THIS_EXPERIMENT_DATA_DIR}/central_node.db"
         try:
             with open(self.db_path, "rb") as f:
                 with open(backup_db_path, "wb") as f2:
@@ -400,6 +439,13 @@ class CentralNode:
             , (problem_instance_name, cutoff_time)
         )
         return result
+    
+
+    @staticmethod
+    def _remove_readonly(func, path, exc_info):
+        """Remove the read-only flag from a file or directory so that it can be deleted."""
+        os.chmod(path, 0o777)
+        func(path)
 
 
     def stop(self):
@@ -410,6 +456,8 @@ class CentralNode:
         teardown_database(self.db_path)
         # Disconnect from the database
         self.__disconnect_from_database()
+        # Delete the central node temporary data folder
+        shutil.rmtree(CENTRAL_DATA_DIR, onexc=CentralNode._remove_readonly)
         self.logger.info("Central node stopped")
          # Print the active solution submissions
         msg = "Active solution submissions after stopping central node:"
