@@ -6,13 +6,12 @@ import os
 import shutil
 import time
 from datetime import datetime, timedelta
-from typing import TypedDict, Dict
 import uuid
 import logging
 import json
 
 from utils.database_utils import create_and_init_database, teardown_database
-from config import CENTRAL_DATA_DIR, DB_PATH, BEST_SOLUTIONS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
+from config import CENTRAL_DATA_DIR, DB_PATH, BEST_SOLUTIONS_DIR, ACTIVE_SOLUTIONS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
 
 # Experiment configuration
 THIS_EXPERIMENT_DATA_DIR = None
@@ -32,29 +31,27 @@ SOLUTION_VALIDATION_MIN_CONSENSUS = int(os.getenv("SOLUTION_VALIDATION_MIN_CONSE
 RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose from when selecting a problem instance for an agent
 
 
-##--- Dataclass for active solution submissions ---##
-class SolutionSubmissionInfo(TypedDict):
-    """Information about a solution submission that is currently being validated."""
-    problem_instance_name: str
-    submission_time: datetime
-    validation_end_time: datetime
-    solution_data: str   # the solution file content
-    objective_value: float   # the objective value of the solution calculated by the agent who submitted the solution
-    validations: list[bool]   # True if agent accepted the solution, False if agent rejected the solution
-    objective_values: list[float]   # the objective values of the agents that validated the solution
-    reward_accumulated: int   # the reward given for this solution submission
-
-
-
-# Some design NOTE (some are actually implemented in the central_node_server.py file - like pool size of problem instances given to agent TODO but just documenting here I think): 
+# Some design NOTE: 
 # - The central node is designed so that there can only be one instance of the central node running at a time (singleton pattern).
-#   If wanting to use multiple central nodes then we would need to change the solution validation in memory storage to a database 
-#   and implement some kind of synchronization between the central nodes.
+#   If wanting to use multiple central nodes then we would need to implement some kind of synchronization between the central nodes 
+#   (both database synchronization and file system synchronization).
+# - Agents need to register with the central node to be able to participate in the platform. The central node keeps track of the 
+#   agent ids that are valid on the platform in a database table (agent_nodes). 
+# - The central node stores problem instances in file system and information about the instances in the database (problem_instances table).
+# - For each start up of the central node it creates a temporary storage to store the best solutions on the platform (initially empty) in 
+#   its file system. It stores the relevant metadata about the best solution the database (best_solutions table), e.g. the path to the 
+#   file where the best solution is stored.
+# - For the solution validation phase the central node registers all solution submissions in a database table (all_solutions) where it stores
+#   the metadata about the submissions. While a solution submission is active, i.e. it is available for agents to validate, the central node 
+#   keeps track the validation results for the solution submission in a database table (active_solutions_submissions_validations). It also 
+#   stores the solution data in a temporary storage in its file system. After the solution validation phase is finished the central node 
+#   stores the final results in the database (all_solutions table) and removes the temporary storage of the solution data (both from the 
+#   the database and the file system).
 # - RANDOM_PROBLEM_INSTANCE_POOL_SIZE is the number of random problem instances that are given to an agent at a time to choose 
 #   from (could include problem instances agent already has downloaded).
-# - Central node gives a solution to an agent when asking for a solution to validate. Central node gives the agent a solution 
-#   for a solution submission that is the oldest active submission, with minimum 30 seconds left and (is not yet validate by 
-#   the agent TODO: implement that).
+# - Central node gives a solution to an agent when asking for a solution to validate. Central node gives the agent the oldest active
+#   solution submission that the agent did not submit by himself and that the agent has not validated before. The central node will 
+#   only give a solution submission that has at least 30 seconds left for validation. (TODO: or give random instead of oldest active? ask what Joe thinks)
 # - SOLUTION_VALIDATION_CONSENUS_RATIO and SOLUTION_VALIDATION_MIN_CONSENSUS are used to determine if a solution is accepted 
 #   or not - we require a certain ratio of agents to accept the solution and a minimum number of agents to accept the solution.
 #   Be careful to have the SOLUTION_VALIDATION_MIN_CONSENSUS not too low since solution validation phase can be finished before 
@@ -70,15 +67,6 @@ class SolutionSubmissionInfo(TypedDict):
 #   and stop the solution validation phase so it will be finalized at that moment. This means that the reward for the problem instance 
 #   can go over budget but only by a "small" amount, but at the same time we won't loose any active solution submission which might 
 #   improve the best overall solution.
-# - The central node keeps track of solution submissions using in memory storage (active_solution_submissions dictionary). 
-#   It is nice to have this in memory since we need to access this data frequently and using different threads in the solution 
-#   validation phase. Also this is just temporary storage and we will only store the final results in the database if successful 
-#   solution submission.
-# - The central node stores information about the problem instances in the database (problem_instances table).
-# - The central node stores the best solutions in a folder (BEST_SOLUTIONS_DIR) and also in the database (best_solutions table).
-
-# (in central_node_server.py - TODO: for clarity and seperation or roles we could actually create methods for this in central node like
-#  get_pool_of_problem_instances() and so on and then call those methods in the server code??)
 # - See api endpoints in central_node_server.py for more information about the API and how the agent can request things on the platform.
 
 
@@ -115,26 +103,28 @@ class CentralNode:
 
         # Web server
         self.web_server = web_server
-        
-        # Lock for multithreading
-        self.lock = threading.Lock()
 
-        # Solution submissions that are currently being validated
-        self.active_solution_submissions: Dict[str, SolutionSubmissionInfo] = dict()   # key is solutions submission id and value is a dictionary with solution submission information
-
-        # Folder to store all temporary central node data for each run - create new folder for each run
+        # Setup folders for all temporary data during each run of the central node/platform
         if os.path.exists(CENTRAL_DATA_DIR):
             shutil.rmtree(CENTRAL_DATA_DIR, onexc=CentralNode._remove_readonly)
         os.makedirs(CENTRAL_DATA_DIR, exist_ok=False)
-
-        # Best solutions temp folder - create new folder for each run for central node to store best solutions
-        self.best_solutions_folder = BEST_SOLUTIONS_DIR
-        os.makedirs(self.best_solutions_folder, exist_ok=False)
-
+        # Folder to store best soluttions on the platform
+        self.best_solutions_dir = BEST_SOLUTIONS_DIR
+        if os.path.exists(self.best_solutions_dir):
+            shutil.rmtree(self.best_solutions_dir, onexc=CentralNode._remove_readonly)
+        os.makedirs(self.best_solutions_dir, exist_ok=False)
+        # Folder to store solution data of active solution submissions
+        self.active_solutions_dir = ACTIVE_SOLUTIONS_DIR
+        if os.path.exists(self.active_solutions_dir):
+            shutil.rmtree(self.active_solutions_dir, onexc=CentralNode._remove_readonly)
+        os.makedirs(self.active_solutions_dir, exist_ok=False)
         # Database
         self.db_path = DB_PATH
         create_and_init_database(self.db_path)
         self.db_connection = self.__connect_to_database()
+
+        # Counter for generating unique agent ids
+        self.agent_counter = 0
 
 
     def __setup_experiment(self):
@@ -227,7 +217,6 @@ class CentralNode:
 
     def edit_data_in_db(self, query: str, params: tuple=()):
         """Insert/Delete data in the database."""
-        #with self.lock:   # NOTE: sqlite has built-in locking so we don't need to use this lock
         try:
             cursor = self.db_connection.cursor()
             cursor.execute(query, params)
@@ -251,6 +240,23 @@ class CentralNode:
             self.logger.error(f"Error while saving database: {e}")
 
 
+    def register_agent_to_platform(self):
+        """Registers agent node to the platform by generating a unique id for the agent and add 
+        to the agent_node database table.
+        
+        Returns:
+            str: The unique id of the agent | None: If an error occurred while registering the agent.
+        """
+        self.agent_counter += 1
+        agent_id = "agent_" + str(self.agent_counter)
+        try:
+            self.edit_data_in_db("INSERT INTO agent_nodes (id) VALUES (?)", (agent_id,))
+            return agent_id
+        except sqlite3.Error as e:
+            self.logger.error(f"Error while registering agent {agent_id} to platform: {e}")
+            return None
+
+
     def get_pool_of_problem_instances(self) -> list[dict] | None:
         """Get a pool of random active problem instances for an agent to choose from.
         Returns:
@@ -259,43 +265,49 @@ class CentralNode:
         return self.query_db("SELECT * FROM problem_instances WHERE active = TRUE ORDER BY RANDOM() LIMIT ?", (RANDOM_PROBLEM_INSTANCE_POOL_SIZE,))
 
             
-    def generate_id(self):
+    def generate_solution_submission_id(self):
         """Generate a unique id (for solution submissions)."""
         return str(uuid.uuid4())
 
 
-    def start_solution_validation_phase(self, problem_instance_name: str, solution_submission_id: str, solution_data: str, objective_value: float):
-        """Start the solution validation phase with a time limit for a solution submission."""
+    def start_solution_validation_phase(self, problem_instance_name: str, solution_submission_id: str, agent_id: str, solution_data: str):
+        """Start the solution validation phase with a time limit for a solution submission.
+        
+        Args:
+            problem_instance_name (str): The name of the problem instance.
+            solution_submission_id (str): The unique id of the solution submission.
+            agent_id (str): The id of the agent that submitted the solution.
+            solution_data (str): The solution data as a string.
+        Raises:
+            Exception: If an error occurs while starting the validation phase.
+        """
         submission_time = datetime.now()
         validation_end_time = submission_time + timedelta(seconds=SOLUTION_VALIDATION_DURATION)
 
         # Create a database entry for the solution submission
         try:
+            sol_file_path = os.path.join(self.active_solutions_dir, f"{solution_submission_id}.sol")
             self.edit_data_in_db(
-                "INSERT INTO all_solutions (id, problem_instance_name, submission_time, validation_end_time) VALUES (?, ?, ?, ?)",
-                (solution_submission_id, problem_instance_name, submission_time, validation_end_time)
+                "INSERT INTO all_solutions (id, agent_id, problem_instance_name, submission_time, validation_end_time, sol_file_path) VALUES (?, ?, ?, ?, ?, ?)",
+                (solution_submission_id, agent_id, problem_instance_name, submission_time, validation_end_time, sol_file_path)
             )
         except sqlite3.Error as e:
             self.logger.error(f"Error while inserting solution submission {solution_submission_id} to database - Solution validation phase aborted: {e}")
-            return
+            raise Exception(f"Error while inserting solution submission {solution_submission_id} to database - Solution validation phase aborted: {e}")
         
+        # Save the solution data to a file
+        try:
+            with open(sol_file_path, "w") as f:
+                f.write(solution_data)
+        except Exception as e:
+            self.logger.error(f"Error while saving tmp solution data to file {sol_file_path} - Solution validation phase aborted: {e}")
+            raise Exception(f"Error while saving solution data to file {sol_file_path} - Solution validation phase aborted: {e}")
+            
         # Start a background thread for this solution submission validation - we use daemon threads so that this thread does not continue to run after the main thread (central node server) has finished
         validation_thread = threading.Thread(target=self._manage_validation_phase, args=(problem_instance_name, solution_submission_id, validation_end_time), daemon=True)
         validation_thread.start()
-
-        # Store the validation phase information for this solution submission in memory for quick access and short-term storage
-        self.active_solution_submissions[solution_submission_id] = {
-            "problem_instance_name": problem_instance_name,
-            "submission_time": submission_time,
-            "validation_end_time": validation_end_time,
-            "solution_data": solution_data,
-            "objective_value": objective_value,
-            "validations": [],
-            "reward_accumulated": 0,
-            "objective_values": []
-        }
-
         self.logger.info(f"Started validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+
 
     def _manage_validation_phase(self, problem_instance_name: str, solution_submission_id: str, validation_end_time: datetime):
         """Manage the ongoing validation phase and end it after the time limit or if problem instance goes over budget."""
@@ -310,17 +322,20 @@ class CentralNode:
                 self.logger.error(f"Error while querying database for problem instance {problem_instance_name}")
                 continue
             reward_accumulated = results[0]["reward_accumulated"]
-            reward_budget = results[0]["reward_budget"]
+            reward_budget = results[0]["reward_budget"] 
             # Get current reward accumulated for all solution submissions for this problem instance
-            active_reward = 0
-            active_solution_submissions = self.active_solution_submissions.copy()
-            for submission in active_solution_submissions.values():
-                if submission["problem_instance_name"] == problem_instance_name:
-                    active_reward += submission["reward_accumulated"]
+            results = self.query_db("SELECT SUM(reward) AS active_reward FROM active_solutions_submissions_validations WHERE problem_instance_name = ?", (problem_instance_name,))
+            if results is None:
+                self.logger.error(f"Error while querying database for active solution submissions for problem instance {problem_instance_name}")
+                continue
+            if not results:
+                # No active solution submissions for this problem instance - continue to next iteration of the loop
+                continue
+            active_reward = results[0]["active_reward"] or 0
             # Compare accumulated reward for this problem instance with the budget
             if reward_accumulated + active_reward >= reward_budget:
                 try:
-                    self.edit_data_in_db("UPDATE problem_instances SET active = False WHERE name = ?", (problem_instance_name,))
+                    self.edit_data_in_db("UPDATE problem_instances SET active = False,  WHERE name = ?", (problem_instance_name,))
                 except sqlite3.Error as e:
                     # On error we just log the error and continue to next iteration of the loop - we will try again next time
                     self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in validation phase loop: {e}")
@@ -330,24 +345,31 @@ class CentralNode:
                 ))
                 break
 
-        # Process final validation after the time limit - use lock since we are accessing shared data (can also be accessed in central_node_server.py), 
-        # e.g. we might be in the middle of finalizing validation while an agent is sending validation results so we need to be careful
-        with self.lock:
-            self._finalize_validation(problem_instance_name, solution_submission_id)
+        # Process final validation after the time limit 
+        self._finalize_validation(problem_instance_name, solution_submission_id)
+            # TODO: how can we still make sure that we are kind of locking the database for this function? It is not really a big deal I think the only 
+            # thing that could not be 100% correct is the reward tracking between central node and agent node since after we have gotten the info from 
+            # active_solutions_submissions_validations table then there is a small window where agent can send validation results to central node and 
+            # get reward but that won't be included in the caluculations in the _finalize_validation function... (not a big deal but yeah...)
+
 
     def _finalize_validation(self, problem_instance_name: str, solution_submission_id: str):
         """Finalize validation based on the collected results."""
         self.logger.info(f"Finalizing validation for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
-        # Retrieve collected validation results
-        solution_submission = self.active_solution_submissions.get(solution_submission_id)
-        if solution_submission is None:
-            self.logger.error(f"No data found for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
-            return
         
+        # Retrieve collected validation results
+        results = self.query_db("SELECT * FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", (solution_submission_id,))
+        if results is None:
+            self.logger.error(f"Error while querying database for solution submission {solution_submission_id}")
+            return
+        validations = [result["validation_response"] for result in results] if results else []
+        objective_values = [result["objective_value"] for result in results] if results else []
+        reward_accumulated = sum(result["reward"] for result in results) if results else 0
+        
+        # Determine the result of the validation phase
         objective_value = None
-        validations = solution_submission["validations"]
         accepted = False
-        if validations:
+        if validations and objective_values:
             # Calculate final status based on validations, e.g. majority vote and minimum number of acceptances
             acceptance_count = sum(validations)
             acceptance_ratio = acceptance_count / len(validations)
@@ -355,48 +377,64 @@ class CentralNode:
                 accepted = True
 
             # Use the most common objective value of the agents that accepted the solution as the objective value for this solution
-            objective_values = solution_submission["objective_values"]
             if objective_values:
                 # Calculate the most common objective value for accepted solutions
                 accepted_objective_values = [objective_values[i] for i in range(len(validations)) if validations[i]]
                 if accepted_objective_values:
                     objective_value = max(set(accepted_objective_values), key=accepted_objective_values.count)
 
+        # Get the file path of the solution data
+        results = self.query_db("SELECT sol_file_path FROM all_solutions WHERE id = ?", (solution_submission_id,))
+        if results is None:
+            self.logger.error(f"Error while querying database for solution submission {solution_submission_id}")
+            return
+        solution_file_location_tmp = results[0]["sol_file_path"]
+
         # If the solution is valid then it should be the best solution so far 
         # NOTE: it is not guaranteed that it is the best solution but there is nothing that the central node should do about that since it is the agents decision!
         if accepted:
             self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name} with objective value {objective_value}")
             # Save solution data to file storage with best solutions
-            solution_file_location = f"{self.best_solutions_folder}/{problem_instance_name}.sol"
             try:
-                with open(solution_file_location, "w") as f:   # will create the file if it does not exist
-                    f.write(solution_submission["solution_data"])
-                self.logger.info(f"Best solution saved to file: {solution_file_location}")
+                with open(solution_file_location_tmp, "r") as f:
+                    solution_data = f.read()
             except Exception as e:
-                self.logger.error(f"Error while saving best solution to file {solution_file_location}: {e}")
+                self.logger.error(f"Error while reading solution data from tmp file {solution_file_location_tmp}: {e}")
+                return
+            solution_file_location_best = f"{self.best_solutions_dir}/{problem_instance_name}.sol"
+            try:
+                with open(solution_file_location_best, "w") as f:   # will create the file if it does not exist
+                    f.write(solution_data)
+                self.logger.info(f"Best solution saved to file: {solution_file_location_best}")
+            except Exception as e:
+                self.logger.error(f"Error while saving best solution to file {solution_file_location_best}: {e}")
 
             # "Give" reward to the agent who submitted the solution
             # NOTE: we don't implement proper reward mechanism just emulating it by adding to the reward given for this solution submission
-            solution_submission["reward_accumulated"] += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
+            reward_accumulated += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
 
             # Update the best solution in the database (or insert if it does not exist)
             try:
-                self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", (problem_instance_name, solution_submission_id, solution_file_location))
+                self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", 
+                                     (problem_instance_name, solution_submission_id, solution_file_location_best)
+                )
             except sqlite3.Error as e:
                 self.logger.error(f"Error while updating best solution in database for problem instance {problem_instance_name}: {e}")
 
         else:
             self.logger.info(f"Declined solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
-        # Insert to db accumulated reward given for this solution submission, objective value and if it was accepted or not
+        # Insert to db accumulated reward given for this solution submission, objective value, if it was accepted or not and remove the solution data file path
         try:
-            self.edit_data_in_db("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ? WHERE id = ?", (solution_submission["reward_accumulated"], objective_value, accepted, solution_submission_id))
+            self.edit_data_in_db("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ?, sol_file_path = NULL WHERE id = ?", 
+                                 (reward_accumulated, objective_value, accepted, solution_submission_id)
+            )
         except sqlite3.Error as e:
             self.logger.error(f"Error while updating solution submission {solution_submission_id} in database: {e}")
 
         # Update the problem instance database table with the reward given for this solution submission
         try:
-            self.edit_data_in_db("UPDATE problem_instances SET reward_accumulated = reward_accumulated + ? WHERE name = ?", (solution_submission["reward_accumulated"], problem_instance_name))
+            self.edit_data_in_db("UPDATE problem_instances SET reward_accumulated = reward_accumulated + ? WHERE name = ?", (reward_accumulated, problem_instance_name))
         except sqlite3.Error as e:
             self.logger.error(f"Error while updating problem instance {problem_instance_name} in database: {e}")
 
@@ -414,32 +452,93 @@ class CentralNode:
                     self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in finalize validation phase: {e}")
                 self.logger.info(f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore")
 
-        # Clean up in-memory tracking for this submission
-        if solution_submission_id in self.active_solution_submissions:
-            del self.active_solution_submissions[solution_submission_id]
+        # Remove the solution data file from the temporary storage
+        try:
+            os.remove(solution_file_location_tmp)
+        except Exception as e:
+            self.logger.error(f"Error while removing tmp solution data file {solution_file_location_tmp}: {e}")
+        
+        # Clean up all rows in the active_solutions_submissions_validations table for this solution submission
+        try:
+            self.edit_data_in_db("DELETE FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", (solution_submission_id,))
+        except sqlite3.Error as e:
+            self.logger.error(f"Error while deleting validation results for solution submission {solution_submission_id}: {e}")
 
         self.logger.info(f"Ended validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
      
-    def get_solution_submission_id(self, problem_instance_name: str) -> list[dict] | None:
-        """Get the oldest active solution submission id with minimum 30 seconds left for a problem instance 
-        (that is not yet validated by the agent TODO)."""
-        # get the oldest active solution submission for the problem instance that has more than 30 seconds left for validation
-        # TODO: Also don't want to give out solutions that this agent has already validated...
-        # TODO: do we want to give out solutions randomly instead that agent has not validated? Maybe better so central node is 
+    def get_solution_submission_id(self, problem_instance_name: str, agent_id: str) -> list[dict] | None:
+        """Get an active solution submission with at least 30 seconds left for validation that this agent is 
+        not the owner of and that the agent has not validated before.
+        
+        Args:
+            problem_instance_name (str): The name of the problem instance.
+            agent_id (str): The id of the agent requesting the solution submission.
+        Returns:
+            list: A list with the solution submission id or None if an error occurred.
+        """
+        # TODO: do we want to give out solutions randomly intead of oldest one? Maybe better so central node is 
         # not "controlling" anyting?
         cutoff_time = datetime.now() + timedelta(seconds=30)
         result = self.query_db(
-            """SELECT id FROM all_solutions 
+            """SELECT id 
+                FROM all_solutions 
                 WHERE problem_instance_name = ? 
                     AND accepted IS NULL 
+                    AND agent_id != ?
                     AND validation_end_time >= ?
+                    AND id NOT IN (
+                        SELECT solution_submission_id
+                        FROM active_solutions_submissions_validations
+                        WHERE agent_validated_id = ?
+                    )
                 ORDER BY submission_time ASC LIMIT 1
             """
-            , (problem_instance_name, cutoff_time)
+            , (problem_instance_name, agent_id, cutoff_time, agent_id)
         )
+        if result is None:
+            self.logger.error(f"Error while querying database for solution submission for problem instance {problem_instance_name}")
+            return None
+       
         return result
     
+
+    def register_solution_validation(self, solution_submission_id: str, problem_instance_name: str, agent_id: str, validation_response: bool, objective_value: float):
+        """Register a validation of a solution submission from an agent to the database.
+        
+        Args:
+            solution_submission_id (str): The unique id of the solution submission.
+            problem_instance_name (str): The name of the problem instance.
+            agent_id (str): The id of the agent that validated the solution.
+            validation_response (bool): The response of the validation (True if accepted, False if declined).
+            objective_value (float): The objective value of the solution.
+            reward (int): The reward given to the agent for validating the solution.
+        Raises:
+            sqlite3.Error: If an error occurs while registering the validation.
+        """
+        try:
+            self.edit_data_in_db(
+            """INSERT INTO active_solutions_submissions_validations 
+                        (solution_submission_id, problem_instance_name, agent_validated_id, validation_response, objective_value, reward) 
+                    VALUES 
+                        (?, ?, ?, ?, ?, ?)
+                """
+                , (solution_submission_id, problem_instance_name, agent_id, validation_response, objective_value, SOLUTION_VALIDATION_REWARD)
+            )
+        except sqlite3.Error as e:
+            self.logger.error(f"Error while registering validation for solution submission {solution_submission_id} for problem instance {problem_instance_name}: {e}")
+            raise sqlite3.Error(f"Error while registering validation for solution submission {solution_submission_id} for problem instance {problem_instance_name}: {e}")
+
+
+    def get_solution_success_reward(self) -> int:
+        """Get the reward for improving the best solution of the platform."""
+        return SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
+    
+
+    def get_solution_validation_reward(self) -> int:
+        """Get the reward for validating a solution."""
+        return SOLUTION_VALIDATION_REWARD
+
 
     @staticmethod
     def _remove_readonly(func, path, exc_info):
@@ -450,17 +549,25 @@ class CentralNode:
 
     def stop(self):
         """Stop the central node - save and close the database"""
+        # Print the active solution submissions
+        msg = "Active solution submissions after stopping central node:"
+        results = self.query_db("SELECT id FROM all_solutions WHERE accepted IS NULL")
+        if results is None:
+            self.logger.error("Error while querying database for active solution submissions")
+        else:
+            if results:
+                for result in results:
+                    msg += f"\n{result["id"]}"
+        self.logger.info(msg)
         # Save the database
         self.__save_db()
+        time.sleep(5)
         # Teardown the database
         teardown_database(self.db_path)
         # Disconnect from the database
         self.__disconnect_from_database()
-        # Delete the central node temporary data folder
-        shutil.rmtree(CENTRAL_DATA_DIR, onexc=CentralNode._remove_readonly)
+        # Delete the central node temporary data folders
+        shutil.rmtree(self.best_solutions_dir, onexc=CentralNode._remove_readonly)
+        shutil.rmtree(self.active_solutions_dir, onexc=CentralNode._remove_readonly)
         self.logger.info("Central node stopped")
-         # Print the active solution submissions
-        msg = "Active solution submissions after stopping central node:"
-        for solution_submission_id in self.active_solution_submissions:
-            msg += f"\n{solution_submission_id}"
-        self.logger.info(msg)
+

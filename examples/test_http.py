@@ -17,7 +17,7 @@ central_node_server_thread = start_server()
 
 time.sleep(5)
 
-agent1 = AgentNode("agent1")
+agent1 = AgentNode()
 agent1.download_problem_instance()
 
 time.sleep(5)

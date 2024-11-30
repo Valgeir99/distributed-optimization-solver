@@ -4,20 +4,14 @@ Central node server for distributed optimization solver. Starts a FastAPI server
 
 # To run as module from root folder: python -m network.central_node_server
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 import uvicorn
 import threading
 import os
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
 from .central_node import CentralNode
 
-# Load environment variables from .env file
-load_dotenv()
-SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCESSFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
-SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
 
 # Create FastAPI application and put it in the central node class
 app = FastAPI()
@@ -47,6 +41,9 @@ def stop_server():
 
 ##--- Dataclasses for the messages - agents need to follow these schemas when sending requests / receiving responses   ---##
 
+class AgentIDResponse(BaseModel):
+    agent_id: str
+
 class ProblemInstanceResponse(BaseModel):
     name: str
     description: str
@@ -58,7 +55,6 @@ class ProblemInstanceStatusResponse(BaseModel):
 
 class SolutionSubmissionRequest(BaseModel):
     solution_data: str
-    objective_value: float
 
 class SolutionSubmissionResponse(BaseModel):
     solution_submission_id: str
@@ -84,10 +80,31 @@ class SolutionValidationRequest(BaseModel):
 ##---- Routes for the central node server ---##
 # TODO: possibly rename enpoint urls to be more descriptive: https://chatgpt.com/c/67335c94-2fd0-8003-8cb5-77a97f76137c
 
+@app.get("/agent/register", response_model=AgentIDResponse)
+async def register_agent() -> AgentIDResponse:
+    """Agent registers to the platform. Central node generates a unique id and returns it to 
+    the agent."""
+    agent_id = central_node.register_agent_to_platform()
+    if agent_id is None:
+        raise HTTPException(status_code=500, detail="Could not register agent to the platform! Try again later.")
+    return AgentIDResponse(agent_id=agent_id)
+
+
 @app.get("/problem_instances/info", response_model=list[ProblemInstanceResponse])
-async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
+async def get_problem_instances_info(agent_id: str = Header(...)) -> list[ProblemInstanceResponse]:
     """Agent requests information about a pool of problem instances so he can download one (or more) 
     of them later. Returns a list of problem instances with their names and descriptions."""
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
+    
     # Get a pool of random problem instances from the central node database
     problem_instances = central_node.get_pool_of_problem_instances()
     if problem_instances is None:
@@ -103,10 +120,22 @@ async def get_problem_instances_info() -> list[ProblemInstanceResponse]:
 
     ) for instance in problem_instances]
 
+
 @app.get("/problem_instances/download/{problem_instance_name}", response_model=ProblemInstanceResponse)
-async def get_problem_instance_data_by_id(problem_instance_name: str) -> ProblemInstanceResponse:
+async def get_problem_instance_data_by_id(problem_instance_name: str, agent_id: str = Header(...)) -> ProblemInstanceResponse:
     """Agent requests a problem instance to download. Returns the problem instance data and best 
     solution on the platform if available."""
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
+
     # Check if problem instance exists
     result = central_node.query_db(
         "SELECT * FROM problem_instances WHERE name = ?", (problem_instance_name,)
@@ -163,9 +192,21 @@ async def get_problem_instance_data_by_id(problem_instance_name: str) -> Problem
 
 
 @app.get("/problem_instances/status/{problem_instance_name}", response_model=ProblemInstanceStatusResponse)
-def check_problem_instance_status(problem_instance_name: str) -> bool:
+def check_problem_instance_status(problem_instance_name: str, agent_id: str = Header(...)) -> bool:
     """Agent checks if the problem instance is active. Returns True if the problem instance is active,
     False otherwise."""
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
+    
+    # Search for the problem instance in the database
     result = central_node.query_db(
         "SELECT active FROM problem_instances WHERE name = ?", (problem_instance_name,)
     )
@@ -180,10 +221,22 @@ def check_problem_instance_status(problem_instance_name: str) -> bool:
 
 
 @app.post("/solutions/upload/{problem_instance_name}", response_model=SolutionSubmissionResponse)
-async def upload_solution(problem_instance_name: str, solution: SolutionSubmissionRequest) -> SolutionSubmissionResponse:
+async def upload_solution(problem_instance_name: str, 
+                          solution: SolutionSubmissionRequest, 
+                          agent_id: str = Header(...)) -> SolutionSubmissionResponse:
     """Agent uploads a solution to a problem instance to the platform - the solution will be available for validation 
     by other agents for limited time to determine if the solution is best one on platform or not (agents need to reach 
     consensus). Returns some metadata about the solution submission."""
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
 
     # Check if problem instance exists and is active
     result = central_node.query_db(
@@ -201,8 +254,11 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
         raise HTTPException(status_code=404, detail="Problem instance is not active!")
     
     # Start the solution validation phase (on different thread) for this solution submission
-    solution_submission_id = central_node.generate_id()
-    central_node.start_solution_validation_phase(problem_instance_name, solution_submission_id, solution.solution_data, solution.objective_value)
+    solution_submission_id = central_node.generate_solution_submission_id()
+    try:
+        central_node.start_solution_validation_phase(problem_instance_name, solution_submission_id, agent_id, solution.solution_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Could not start solution validation phase. Please try again later.")
 
     # Get solution submission data from the database
     result = central_node.query_db(
@@ -224,12 +280,23 @@ async def upload_solution(problem_instance_name: str, solution: SolutionSubmissi
     )
 
 
-# NOTE: agents could actually check solution submissions of other agents (and "claim" the reward even though they don't get any reward it is just for bookkeeping 
+# NOTE: agents could actually check solution submission status multiple times and "claim" the reward even though they don't get any reward it is just for bookkeeping 
 # in this proof of concept so it does not matter)
 @app.get("/solutions/status/{solution_submission_id}", response_model=SolutionSubmissionResponse)
-async def get_solution_submission_status(solution_submission_id: str) -> SolutionSubmissionResponse:
+async def get_solution_submission_status(solution_submission_id: str, agent_id: str = Header(...)) -> SolutionSubmissionResponse:
     """Agent requests the status of a solution submission. Returns the status of the solution submission and
     the reward value (if the solution has been validated)."""    
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
+    
     # Check if solution submission exists
     result = central_node.query_db(
         "SELECT * FROM all_solutions WHERE id = ?", (solution_submission_id,)
@@ -241,6 +308,11 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
         # Solution submission not found
         raise HTTPException(status_code=404, detail="Solution submission id not found!")
     solution_submission = result[0]
+
+    # Check if this solution submission belongs to the agent
+    if agent_id != solution_submission["agent_id"]:
+        # Agent does not own this solution submission
+        raise HTTPException(status_code=400, detail="Agent does not own this solution submission!")
 
     # Check if solution submission is active
     if solution_submission["accepted"] is None:
@@ -254,7 +326,7 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
     else:
         # Solution submission has been validated
         if solution_submission["accepted"]:
-            reward = SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
+            reward = central_node.get_solution_success_reward()
         else:
             reward = 0
         return SolutionSubmissionResponse(
@@ -268,9 +340,19 @@ async def get_solution_submission_status(solution_submission_id: str) -> Solutio
     
 
 @app.get("/solutions/best/download/{problem_instance_name}", response_model=SolutionDataResponse)
-async def download_best_solution(problem_instance_name: str):
+async def download_best_solution(problem_instance_name: str, agent_id: str = Header(...)):
     """Agent requests to download the best solution for a specific problem instance. 
     Returns the best solution data if available."""
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
 
     # Check if problem instance exists
     result = central_node.query_db(
@@ -316,10 +398,20 @@ async def download_best_solution(problem_instance_name: str):
 
 
 @app.get("/solutions/validate/download/{problem_instance_name}", response_model=SolutionDataResponse)
-async def download_solution_by_problem_instance_id(problem_instance_name: str):
+async def download_solution_by_problem_instance_id(problem_instance_name: str, agent_id: str = Header(...)):
     """Agent requests to download a solution to a specific problem instance (to validate it).
     Returns the oldest active solution submission that has more than 30 seconds left for validation."""
-
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
+    
     # Check if problem instance exists
     result = central_node.query_db(
         "SELECT * FROM problem_instances WHERE name = ?", (problem_instance_name,)
@@ -335,24 +427,35 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
         raise HTTPException(status_code=404, detail="Problem instance is not active!")
 
     # Get a solution submission id
-    result = central_node.get_solution_submission_id(problem_instance_name)
+    result = central_node.get_solution_submission_id(problem_instance_name, agent_id)
     if result is None:
         # Database error
         raise HTTPException(status_code=500, detail="Database error")
     if not result:
         # No active solution submission found
-        raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!")
+        raise HTTPException(status_code=404, detail="No active solution submission found for this agent node to validate for this problem instance!")
     solution_submission_id = result[0]["id"]
 
-    # Get solution data from in memory data structure
-    solution_submission = central_node.active_solution_submissions.get(solution_submission_id)
-    if solution_submission is None:
-        # No solution submission in memory for this solution submission id
-        raise HTTPException(status_code=404, detail="No active solution submission found for the problem instance!")
-    solution_data = solution_submission["solution_data"]
-    if solution_data is None:
-        # Solution data not found
-        raise HTTPException(status_code=500, detail="Solution data not found in memory for solution submission!")
+    # Get solution data from file storage
+    result = central_node.query_db(
+        "SELECT sol_file_path FROM all_solutions WHERE id = ?", (solution_submission_id,)
+    )
+    if result is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not result:
+        # Solution submission not found
+        raise HTTPException(status_code=404, detail="Solution submission not found!")
+    solution_file_path = result[0]["sol_file_path"]
+    if os.path.exists(solution_file_path):
+        try:
+            with open(solution_file_path, "r") as file:
+                solution_data = file.read()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="File read error")
+    else:
+        # File not found
+        raise HTTPException(status_code=404, detail="Solution data file not found!")
 
     return SolutionDataResponse(
         problem_instance_name=problem_instance_name,
@@ -361,12 +464,23 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str):
     )
 
 
-# NOTE: there is nothing preventing agents to validate the same solution multiple times... (but I guess we don't 
-# care about that in proof of concept TODO yes I think we should try to fix and also prevent agent who submitted the solution to validate it)
 @app.post("/solutions/validate/{solution_submission_id}", response_model=SolutionValidationResponse)
-async def validate_solution(solution_submission_id: str, solution_validation_result: SolutionValidationRequest) -> SolutionValidationResponse:
+async def validate_solution(solution_submission_id: str, 
+                            solution_validation_result: SolutionValidationRequest,
+                            agent_id: str = Header(...)) -> SolutionValidationResponse:
     """Agent sends solution validation result to central node for a specific solution submission. 
     Returns the reward for the agent who validated the solution."""
+    # Check if agent exists - we require the agent id to be sent in the header
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
+    results = central_node.query_db("SELECT * FROM agent_nodes WHERE id = ?", (agent_id,))
+    if results is None:
+        # Database error
+        raise HTTPException(status_code=500, detail="Database error")
+    if not results:
+        # Agent not found
+        raise HTTPException(status_code=404, detail="Agent ID not registered on the platform!")
+        
     # Check if the solution submission exists
     result = central_node.query_db(
         "SELECT * FROM all_solutions WHERE id = ?", (solution_submission_id,)
@@ -383,15 +497,7 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
     if solution_submission["accepted"] is not None:
         # Solution submission is already validated
         raise HTTPException(status_code=400, detail="Solution submission has already been validated by the platform!")
-    # NOTE: Double check if the solution submission is still active (using in memory data structure) - we are using locking 
-    # when finalizing the solution validation phase so there the database and in memory data structure are updated atomically
-    # However! there might be a small chance that database says inactive but it still exists in memory when we update 
-    # the database in the loop of the solution validation phase
-    solution_submission = central_node.active_solution_submissions.get(solution_submission_id)   # TODO: or what?????????? We are inserting in database in manage and not in memory...
-    if solution_submission is None:
-        # Solution submission not found (so it has already been validated)
-        raise HTTPException(status_code=400, detail="Solution submission has already been validated by the platform!")
-
+    
     # Check if the problem instance is active
     problem_instance_name = solution_submission["problem_instance_name"]
     result = central_node.query_db(
@@ -406,14 +512,33 @@ async def validate_solution(solution_submission_id: str, solution_validation_res
     if result[0]["active"] == False:
         # Problem instance is not active
         raise HTTPException(status_code=404, detail="Problem instance is not active!")
+    
+    # Check if this is the agent's own solutions submission
+    if agent_id == solution_submission["agent_id"]:
+        # Agent cannot validate his own solution submission
+        raise HTTPException(status_code=400, detail="Agent cannot validate his own solution submission!")
+        
+    # Check if this agent has already validated this solution submission
+    solution_submission_id = solution_submission["id"]
+    result = central_node.query_db(
+        "SELECT * FROM active_solutions_submissions_validations WHERE solution_submission_id = ? AND agent_validated_id = ?", 
+        (solution_submission_id, agent_id)
+    )
+    if result is None:
+        # Database error
+        central_node.logger.debug("Database error")
+        raise HTTPException(status_code=500, detail="Database error")
+    if result:
+        # Agent has already validated this solution submission
+        raise HTTPException(status_code=400, detail="Agent has already validated this solution submission!")
+        
+    # Insert the solution validation in the database
+    try:
+        central_node.register_solution_validation(solution_submission_id, problem_instance_name, agent_id, solution_validation_result.response, solution_validation_result.objective_value)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Database error")
 
-    # Update the solution submission
-    with central_node.lock:
-        solution_submission["validations"].append(solution_validation_result.response)
-        solution_submission["objective_values"].append(solution_validation_result.objective_value)
-        solution_submission["reward_accumulated"] += SOLUTION_VALIDATION_REWARD
-
-    return SolutionValidationResponse(reward=SOLUTION_VALIDATION_REWARD)
+    return SolutionValidationResponse(reward=central_node.get_solution_validation_reward())
     
     
 @app.get("/solutions/validate")

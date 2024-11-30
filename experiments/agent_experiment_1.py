@@ -14,6 +14,8 @@
 # 3. After submitting a solution then the agent should check the status every x minutes until the problem is validated
 # 4. Asks to validate all problem instances the agent has downloaded every x minutes
 
+# TODO: add randomness?
+
 
 import sys
 import os
@@ -26,8 +28,7 @@ from network.agent_node import AgentNode
 
 
 # Agent
-agent_name = sys.argv[1]
-agent = AgentNode(agent_name)
+agent = AgentNode()
 
 # Agent events
 def download_problem_instance():
@@ -49,6 +50,9 @@ def check_submit_solution_status():
 def validate_solutions():
     for problem_instance in agent.problem_instances:
         agent.validate_solution_request(problem_instance)
+# TODO: one big flaw with this is that in a smaller network then in the beginning most solutions will not get 
+# accepted since agents won't validate it since they have not downloaded the problem instance (could let agents 
+# download more at the beginning or change some logic)
 
 def update_problem_instance_status():
     for problem_instance in agent.problem_instances:
@@ -60,7 +64,7 @@ schedule.every(1).minutes.do(check_submit_solution_status)
 schedule.every(5).minutes.do(update_problem_instance_status)   # not necessarry but this will clean up solver memory if problem instance is not active anymore
 
 solver_thread = None
-execution_time = int(sys.argv[2])   # in seconds
+execution_time = int(sys.argv[1])   # in seconds
 start_time = time.time()
 elapsed_time = 0
 while elapsed_time < execution_time:

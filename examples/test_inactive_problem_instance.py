@@ -26,7 +26,7 @@ try:
 
     time.sleep(5)
 
-    agent1 = AgentNode("agent1")
+    agent1 = AgentNode()
     agent1.download_problem_instance_data_by_name("p0201")
 
     time.sleep(5)
@@ -38,9 +38,9 @@ try:
     solver_thread.start()
 
     # More agents to download the problem instance
-    agent2 = AgentNode("agent2")
+    agent2 = AgentNode()
     agent2.download_problem_instance_data_by_name(problem_instance_name)
-    agent3 = AgentNode("agent3")
+    agent3 = AgentNode()
     agent3.download_problem_instance_data_by_name(problem_instance_name)
 
     # Let agent1 try to start solving problem while it is already solving - should return without solving and print some warning message

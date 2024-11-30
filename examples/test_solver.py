@@ -24,7 +24,7 @@ try:
 
     time.sleep(5)
 
-    agent1 = AgentNode("agent1")
+    agent1 = AgentNode()
     agent1.download_problem_instance_data_by_name("p0201")
     #agent1.download_problem_instance()
 
@@ -38,15 +38,15 @@ try:
     #agent1.solve_problem_instance(problem_instance_name)
 
     # More agents to download the problem instance
-    agent2 = AgentNode("agent2")
+    agent2 = AgentNode()
     agent2.download_problem_instance_data_by_name(problem_instance_name)
-    agent3 = AgentNode("agent3")
+    agent3 = AgentNode()
     agent3.download_problem_instance_data_by_name(problem_instance_name)
 
     # Let agent1 try to start solving problem while it is already solving - should return without solving and print some warning message
-    solver_thread2 = threading.Thread(target=agent1.solve_problem_instance, args=(problem_instance_name,))
-    solver_thread2.start()
-    solver_thread2.join()
+    # solver_thread2 = threading.Thread(target=agent1.solve_problem_instance, args=(problem_instance_name,))
+    # solver_thread2.start()
+    # solver_thread2.join()
 
     # Wait for the solver to finish - NOTE that it needs to finish before validation phase ends otherwise code below is not guaranteed to work
     solver_thread.join()
@@ -54,6 +54,14 @@ try:
     time.sleep(5)
 
     # Let agents validate the after agent1 has solved it and submitted the solution
+    agent2.validate_solution_request(problem_instance_name)
+    agent3.validate_solution_request(problem_instance_name)
+
+    # Let the agent1 validate its own solution - should not be allowed
+    # solution_submission_id = list(agent1.problem_instances[problem_instance_name]["active_solution_submission_ids"])[0]
+    # agent1.val_test(solution_submission_id)
+
+    # Let agent2 and agent3 validate the solution again - should not be allowed
     agent2.validate_solution_request(problem_instance_name)
     agent3.validate_solution_request(problem_instance_name)
 

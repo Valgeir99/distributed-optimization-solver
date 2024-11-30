@@ -1,8 +1,5 @@
 --## Database schema for database on central nodes for distributed optimization solver ##--
 
--- TODO: update schema to be the same as in drawio diagram
-
-
 -- Create problem_instances table
 CREATE TABLE problem_instances (
     name TEXT PRIMARY KEY,   -- name of the problem instance is unique (instead of id)
@@ -15,70 +12,44 @@ CREATE TABLE problem_instances (
 );
 
 -- Create agent_nodes table
--- CREATE TABLE agent_nodes (
---     id TEXT PRIMARY KEY
---     --host TEXT NOT NULL,
---     --port INTEGER NOT NULL
--- );
-
--- Create central_nodes table
--- CREATE TABLE central_nodes (
---     id TEXT PRIMARY KEY,
---     host TEXT NOT NULL,
---     port INTEGER NOT NULL
--- );
-
--- Create solution_submissions table (TODO: not sure if I will use all of these columns since we might instead want to use in memory data structures since we only have 
--- one central node and we can just keep track of the data in memory since it is way faster than constantly querying the database)
--- CREATE TABLE solution_submissions (
---     id INTEGER PRIMARY KEY AUTOINCREMENT,
---     problem_instance_name TEXT,
---     agent_node_id TEXT,
---     submission_time DATETIME NOT NULL,
---     objective_value INTEGER NOT NULL,
---     reward INTEGER NOT NULL,
---     solution_status TEXT NOT NULL,   -- status of the solution (e.g., "submitted", "accepted", "rejected")
---     number_of_validations INTEGER DEFAULT 0,
---     number_of_rejections INTEGER DEFAULT 0,
---     number_of_acceptances INTEGER DEFAULT 0,
---     FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
---     FOREIGN KEY (agent_node_id) REFERENCES agent_nodes (id)
--- );
+CREATE TABLE agent_nodes (
+    id TEXT PRIMARY KEY
+);
 
 -- Create all_solutions table
 CREATE TABLE all_solutions (
     id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,   -- id of the agent that submitted the solution
     problem_instance_name TEXT NOT NULL,
     submission_time DATETIME NOT NULL,
     validation_end_time DATETIME NOT NULL,
     objective_value INTEGER DEFAULT NULL,
     reward_accumulated INTEGER DEFAULT 0,
     accepted BOOLEAN DEFAULT NULL,   -- whether the solution was accepted as current best one or not (NULL if not yet evaluated)
-    FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name)
+    sol_file_path TEXT,   -- location of the solution file (path would only exist during solution validation phase)
+    FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
+    FOREIGN KEY (agent_id) REFERENCES agent_nodes (id)
+);
+
+-- Create active_solutions_submissions_validations table - it stores the validation responses of the agents for the active solution submissions
+CREATE TABLE active_solutions_submissions_validations (
+    solution_submission_id TEXT KEY,
+    problem_instance_name TEXT,
+    agent_validated_id TEXT NOT NULL,   -- id of the agent that validated the solution
+    validation_response BOOLEAN NOT NULL,   -- whether the agent accepted (1) or rejected (0) the solution
+    objective_value INTEGER NOT NULL,   -- objective value calulated by the agent
+    reward INTEGER NOT NULL,   -- reward that should be given to the agent who validated by the agent
+    PRIMARY KEY (solution_submission_id, agent_validated_id),   -- each agent can only validate each solution submission once
+    FOREIGN KEY (solution_submission_id) REFERENCES all_solutions (id),
+    FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
+    FOREIGN KEY (agent_validated_id) REFERENCES agent_nodes (id)
 );
 
 -- Create best_solutions table
 CREATE TABLE best_solutions (
     problem_instance_name TEXT PRIMARY KEY,
-    solution_id INTEGER,
+    solution_id TEXT NOT NULL,
     file_location TEXT NOT NULL,
-    --objective_value INTEGER NOT NULL, -- redundant since it's in all_solutions
-    --submission_time DATETIME NOT NULL,
     FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
     FOREIGN KEY (solution_id) REFERENCES all_solutions (id)
 );
-
--- Create connections table
--- CREATE TABLE connections (
---     agent_node_id TEXT,
---     central_node_id TEXT,
---     --problem_instance_id TEXT,
---     PRIMARY KEY (agent_node_id, central_node_id), -- agent_node_id, central_node_id, and problem_instance_id together form a unique key
---     FOREIGN KEY (agent_node_id) REFERENCES agent_nodes (id) ON DELETE CASCADE, -- ON DELETE CASCADE to delete all connections to a node when it is deleted
---     FOREIGN KEY (central_node_id) REFERENCES central_nodes (id) ON DELETE CASCADE
---     --FOREIGN KEY (problem_instance_id) REFERENCES problem_instances (id) ON DELETE CASCADE
--- );
-
--- TODO: possibly add rewards table for tracking rewards
--- "If you foresee complex reward distribution mechanisms, consider a separate table to track agent earnings 
--- over time (e.g., reward_transactions with agent_id, problem_instance_id, reward_amount, and timestamp)."

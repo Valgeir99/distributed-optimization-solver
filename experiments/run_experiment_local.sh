@@ -36,9 +36,8 @@ START_CORE=1
 AGENT_PIDS=() # To keep track of agent process IDs
 for i in $(seq 1 $NUM_AGENTS); do
     CORE=$((START_CORE + i - 1))
-    AGENT=$agent_$i
     echo "Starting agent $i on core $CORE..."
-    taskset -c $CORE python experiments/agent_experiment_1.py $AGENT $TOTAL_TIME &
+    taskset -c $CORE python experiments/agent_experiment_1.py $TOTAL_TIME &
     AGENT_PIDS+=($!) # Record the PID of the agent
 done
 

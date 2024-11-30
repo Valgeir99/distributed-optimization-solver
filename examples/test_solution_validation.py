@@ -23,7 +23,7 @@ central_node_server_thread = start_server()
 
 time.sleep(5)
 
-agent1 = AgentNode("agent1")
+agent1 = AgentNode()
 agent1.download_problem_instance()
 
 time.sleep(5)
@@ -54,10 +54,10 @@ print(all_solutions)
 time.sleep(5)
 
 # Create agents to validate the solution
-agent2 = AgentNode("agent2")
+agent2 = AgentNode()
 agent2.download_problem_instance_data_by_name(problem_instance_name)
 agent2.print_problem_instances()
-agent3 = AgentNode("agent3")
+agent3 = AgentNode()
 agent3.download_problem_instance_data_by_name(problem_instance_name)
 
 time.sleep(5)
