@@ -80,10 +80,10 @@ while elapsed_time < execution_time:
     time.sleep(10)
     elapsed_time = time.time() - start_time
 
-time.sleep(30)   # wait a little bit since agent might still be validating a solution
+time.sleep(5)   # wait a little bit since agent might still be validating a solution
 
 # NOTE: if there is a solution submission that is still being validated then we will not wait for that (impossible to know and it is the central node that controls this)
 
 # Clean up agent
-check_submit_solution_status()   # run check solution submission status event to claim rewards before shutting down
 agent.clean_up()
+print(f"Agent {agent.id} finished execution")

@@ -1,18 +1,19 @@
 #!/bin/bash
 
-# Define the cleanup function
-cleanup() {
+# Define the unexpected_interuption function
+unexpected_interuption() {
+    echo "The experiment has been interrupted unexpectedly (data won't be trustworthy). Killing processes..."
     echo "Stopping agent nodes..."
     for PID in "${AGENT_PIDS[@]}"; do
         kill $PID
     done
     echo "Stopping central node web server..."
-    kill $CENTRAL_PID
-    sleep 10
+    kill -SIGINT $CENTRAL_PID  # Send SIGINT to central node server
+    wait $CENTRAL_PID  # Wait for the process to terminate
 }
 
 # Trap SIGINT and SIGTERM signals and call the cleanup function
-trap cleanup SIGINT SIGTERM
+trap unexpected_interuption SIGINT SIGTERM
 
 # Run from the root directory of this project
 cd ../
@@ -48,4 +49,6 @@ for PID in "${AGENT_PIDS[@]}"; do
 done
 
 # Cleanup
-cleanup
+echo "Experiment completed successfully. Cleaning up..."
+kill -SIGINT $CENTRAL_PID  # Send SIGINT to central node server
+wait $CENTRAL_PID  # Wait for the process to terminate
