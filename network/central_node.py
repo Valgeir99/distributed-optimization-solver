@@ -215,12 +215,13 @@ class CentralNode:
         # NOTE: remember we need to check if the result is None when we call this function!!
 
 
-    def edit_data_in_db(self, query: str, params: tuple=()):
+    def edit_data_in_db(self, query: str, params: tuple=(), commit: bool=True):
         """Insert/Delete data in the database."""
         try:
             cursor = self.db_connection.cursor()
             cursor.execute(query, params)
-            self.db_connection.commit()
+            if commit:
+                self.db_connection.commit()
             cursor.close()
         except sqlite3.Error as e:
             self.db_connection.rollback()
@@ -347,124 +348,152 @@ class CentralNode:
 
         # Process final validation after the time limit 
         self._finalize_validation(problem_instance_name, solution_submission_id)
-            # TODO: how can we still make sure that we are kind of locking the database for this function? It is not really a big deal I think the only 
-            # thing that could not be 100% correct is the reward tracking between central node and agent node since after we have gotten the info from 
-            # active_solutions_submissions_validations table then there is a small window where agent can send validation results to central node and 
-            # get reward but that won't be included in the caluculations in the _finalize_validation function... (not a big deal but yeah...)
-
-
+           
+           
     def _finalize_validation(self, problem_instance_name: str, solution_submission_id: str):
         """Finalize validation based on the collected results."""
         self.logger.info(f"Finalizing validation for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+
+        try:
+            # Begin a database transaction so that we can do multiple operations in the database and commit them all at once
+            # NOTE: This is both for data consistency if one operation in this function fails then we decline the solution submission by default,
+            # and in the case that an agent is validating the solution at the same time as we are finalizing it
+            self.db_connection.execute("BEGIN TRANSACTION")
         
-        # Retrieve collected validation results
-        results = self.query_db("SELECT * FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", (solution_submission_id,))
-        if results is None:
-            self.logger.error(f"Error while querying database for solution submission {solution_submission_id}")
-            return
-        validations = [result["validation_response"] for result in results] if results else []
-        objective_values = [result["objective_value"] for result in results] if results else []
-        reward_accumulated = sum(result["reward"] for result in results) if results else 0
-        
-        # Determine the result of the validation phase
-        objective_value = None
-        accepted = False
-        if validations and objective_values:
-            # Calculate final status based on validations, e.g. majority vote and minimum number of acceptances
-            acceptance_count = sum(validations)
-            acceptance_ratio = acceptance_count / len(validations)
-            if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO and acceptance_count >= SOLUTION_VALIDATION_MIN_CONSENSUS:
-                accepted = True
-
-            # Use the most common objective value of the agents that accepted the solution as the objective value for this solution
-            if objective_values:
-                # Calculate the most common objective value for accepted solutions
-                accepted_objective_values = [objective_values[i] for i in range(len(validations)) if validations[i]]
-                if accepted_objective_values:
-                    objective_value = max(set(accepted_objective_values), key=accepted_objective_values.count)
-
-        # Get the file path of the solution data
-        results = self.query_db("SELECT sol_file_path FROM all_solutions WHERE id = ?", (solution_submission_id,))
-        if results is None:
-            self.logger.error(f"Error while querying database for solution submission {solution_submission_id}")
-            return
-        solution_file_location_tmp = results[0]["sol_file_path"]
-
-        # If the solution is valid then it should be the best solution so far 
-        # NOTE: it is not guaranteed that it is the best solution but there is nothing that the central node should do about that since it is the agents decision!
-        if accepted:
-            self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name} with objective value {objective_value}")
-            # Save solution data to file storage with best solutions
-            try:
-                with open(solution_file_location_tmp, "r") as f:
-                    solution_data = f.read()
-            except Exception as e:
-                self.logger.error(f"Error while reading solution data from tmp file {solution_file_location_tmp}: {e}")
+            # Retrieve collected validation results
+            results = self.query_db("SELECT * FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", (solution_submission_id,))
+            if results is None:
+                self.logger.error(f"Error while querying database for solution submission {solution_submission_id}")
                 return
-            solution_file_location_best = f"{self.best_solutions_dir}/{problem_instance_name}.sol"
-            try:
-                with open(solution_file_location_best, "w") as f:   # will create the file if it does not exist
-                    f.write(solution_data)
-                self.logger.info(f"Best solution saved to file: {solution_file_location_best}")
-            except Exception as e:
-                self.logger.error(f"Error while saving best solution to file {solution_file_location_best}: {e}")
+            validations = [result["validation_response"] for result in results] if results else []
+            objective_values = [result["objective_value"] for result in results] if results else []
+            reward_accumulated = sum(result["reward"] for result in results) if results else 0
+            
+            # Determine the result of the validation phase
+            objective_value = None
+            accepted = False
+            if validations and objective_values:
+                # Calculate final status based on validations, e.g. majority vote and minimum number of acceptances
+                acceptance_count = sum(validations)
+                acceptance_ratio = acceptance_count / len(validations)
+                if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO and acceptance_count >= SOLUTION_VALIDATION_MIN_CONSENSUS:
+                    accepted = True
 
-            # "Give" reward to the agent who submitted the solution
-            # NOTE: we don't implement proper reward mechanism just emulating it by adding to the reward given for this solution submission
-            reward_accumulated += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
+                # Use the most common objective value of the agents that accepted the solution as the objective value for this solution
+                if objective_values:
+                    # Calculate the most common objective value for accepted solutions
+                    accepted_objective_values = [objective_values[i] for i in range(len(validations)) if validations[i]]
+                    if accepted_objective_values:
+                        objective_value = max(set(accepted_objective_values), key=accepted_objective_values.count)
 
-            # Update the best solution in the database (or insert if it does not exist)
+            # Get the file path of the solution data
+            results = self.query_db("SELECT sol_file_path FROM all_solutions WHERE id = ?", (solution_submission_id,))
+            if results is None:
+                self.logger.error(f"Error while querying database for solution submission {solution_submission_id}")
+                return
+            solution_file_location_tmp = results[0]["sol_file_path"]
+
+            # If the solution is valid then it should be the best solution so far 
+            # NOTE: it is not guaranteed that it is the best solution but there is nothing that the central node should do about that since it is the agents decision!
+            if accepted:
+                self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name} with objective value {objective_value}")
+                # Save solution data to file storage with best solutions
+                try:
+                    with open(solution_file_location_tmp, "r") as f:
+                        solution_data = f.read()
+                except Exception as e:
+                    self.logger.error(f"Error while reading solution data from tmp file {solution_file_location_tmp}: {e}")
+                    return
+                solution_file_location_best = f"{self.best_solutions_dir}/{problem_instance_name}.sol"
+                try:
+                    with open(solution_file_location_best, "w") as f:   # will create the file if it does not exist
+                        f.write(solution_data)
+                    self.logger.info(f"Best solution saved to file: {solution_file_location_best}")
+                except Exception as e:
+                    self.logger.error(f"Error while saving best solution to file {solution_file_location_best}: {e}")
+
+                # "Give" reward to the agent who submitted the solution
+                # NOTE: we don't implement proper reward mechanism just emulating it by adding to the reward given for this solution submission
+                reward_accumulated += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
+
+                # Update the best solution in the database (or insert if it does not exist)
+                try:
+                    self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", 
+                                        (problem_instance_name, solution_submission_id, solution_file_location_best), 
+                                        commit=False
+                    )
+                except sqlite3.Error as e:
+                    self.logger.error(f"Error while updating best solution in database for problem instance {problem_instance_name}: {e}")
+
+            else:
+                self.logger.info(f"Declined solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+
+            # Insert to db accumulated reward given for this solution submission, objective value, if it was accepted or not and remove the solution data file path
             try:
-                self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", 
-                                     (problem_instance_name, solution_submission_id, solution_file_location_best)
+                self.edit_data_in_db("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ?, sol_file_path = NULL WHERE id = ?", 
+                                    (reward_accumulated, objective_value, accepted, solution_submission_id),
+                                    commit=False
                 )
             except sqlite3.Error as e:
-                self.logger.error(f"Error while updating best solution in database for problem instance {problem_instance_name}: {e}")
+                self.logger.error(f"Error while updating solution submission {solution_submission_id} in database: {e}")
 
-        else:
-            self.logger.info(f"Declined solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+            # Update the problem instance database table with the reward given for this solution submission
+            try:
+                self.edit_data_in_db("UPDATE problem_instances SET reward_accumulated = reward_accumulated + ? WHERE name = ?", 
+                                     (reward_accumulated, problem_instance_name),
+                                     commit=False
+                )
+            except sqlite3.Error as e:
+                self.logger.error(f"Error while updating problem instance {problem_instance_name} in database: {e}")
 
-        # Insert to db accumulated reward given for this solution submission, objective value, if it was accepted or not and remove the solution data file path
-        try:
-            self.edit_data_in_db("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ?, sol_file_path = NULL WHERE id = ?", 
-                                 (reward_accumulated, objective_value, accepted, solution_submission_id)
-            )
-        except sqlite3.Error as e:
-            self.logger.error(f"Error while updating solution submission {solution_submission_id} in database: {e}")
+            # If the reward is finished then we should make this problem instance inactive
+            results = self.query_db("SELECT reward_accumulated, reward_budget FROM problem_instances WHERE name = ?", (problem_instance_name,))
+            if results is None:
+                self.logger.error(f"Error while querying database for problem instance {problem_instance_name}")
+            else:
+                reward_accumulated = results[0]["reward_accumulated"]
+                reward_budget = results[0]["reward_budget"]
+                if reward_accumulated >= reward_budget:
+                    try:
+                        self.edit_data_in_db("UPDATE problem_instances SET active = False WHERE name = ?", 
+                                             (problem_instance_name,), 
+                                             commit=False
+                        )
+                    except sqlite3.Error as e:
+                        self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in finalize validation phase: {e}")
+                    self.logger.info(f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore")
 
-        # Update the problem instance database table with the reward given for this solution submission
-        try:
-            self.edit_data_in_db("UPDATE problem_instances SET reward_accumulated = reward_accumulated + ? WHERE name = ?", (reward_accumulated, problem_instance_name))
-        except sqlite3.Error as e:
-            self.logger.error(f"Error while updating problem instance {problem_instance_name} in database: {e}")
+            # Remove the solution data file from the temporary storage
+            try:
+                os.remove(solution_file_location_tmp)
+            except Exception as e:
+                self.logger.error(f"Error while removing tmp solution data file {solution_file_location_tmp}: {e}")
+            
+            # Clean up all rows in the active_solutions_submissions_validations table for this solution submission
+            try:
+                self.edit_data_in_db("DELETE FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", 
+                                     (solution_submission_id,),
+                                     commit=False
+                )
+            except sqlite3.Error as e:
+                self.logger.error(f"Error while deleting validation results for solution submission {solution_submission_id}: {e}")
 
-        # If the reward is finished then we should make this problem instance inactive
-        results = self.query_db("SELECT reward_accumulated, reward_budget FROM problem_instances WHERE name = ?", (problem_instance_name,))
-        if results is None:
-            self.logger.error(f"Error while querying database for problem instance {problem_instance_name}")
-        else:
-            reward_accumulated = results[0]["reward_accumulated"]
-            reward_budget = results[0]["reward_budget"]
-            if reward_accumulated >= reward_budget:
-                try:
-                    self.edit_data_in_db("UPDATE problem_instances SET active = False WHERE name = ?", (problem_instance_name,))
-                except sqlite3.Error as e:
-                    self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in finalize validation phase: {e}")
-                self.logger.info(f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore")
+            self.logger.info(f"Ended validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
-        # Remove the solution data file from the temporary storage
-        try:
-            os.remove(solution_file_location_tmp)
+            # Commit the transactions
+            self.db_connection.commit()
+
+
         except Exception as e:
-            self.logger.error(f"Error while removing tmp solution data file {solution_file_location_tmp}: {e}")
-        
-        # Clean up all rows in the active_solutions_submissions_validations table for this solution submission
-        try:
-            self.edit_data_in_db("DELETE FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", (solution_submission_id,))
-        except sqlite3.Error as e:
-            self.logger.error(f"Error while deleting validation results for solution submission {solution_submission_id}: {e}")
+            # If an error occurs while finalizing the validation then we should decline the solution by default and rollback the database transaction
+            self.logger.error(f"Error while finalizing validation for solution submission {solution_submission_id} for problem instance {problem_instance_name} \
+                              - the solution will be declined by default: {e}")
+            self.db_connection.rollback()
+            try:
+                self.edit_data_in_db("UPDATE all_solutions SET accepted = FALSE WHERE id = ?", (solution_submission_id,))
+            except sqlite3.Error as e:
+                self.logger.error(f"Error while updating solution submission {solution_submission_id} in database: {e}")
 
-        self.logger.info(f"Ended validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
      
     def get_solution_submission_id(self, problem_instance_name: str, agent_id: str) -> list[dict] | None:
