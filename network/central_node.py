@@ -24,8 +24,7 @@ CENTRAL_NODE_PORT = int(os.getenv("CENTRAL_NODE_PORT"))
 SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))  # seconds
 SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCESSFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
 SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
-SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of validations needed to accept a solution
-SOLUTION_VALIDATION_MIN_CONSENSUS = int(os.getenv("SOLUTION_VALIDATION_MIN_CONSENSUS"))  # minimum number of validations needed to accept a solution
+SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of positive validations needed to accept a solution out of all agents registered (e.g. majority)
 
 # Other constants
 RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose from when selecting a problem instance for an agent
@@ -52,10 +51,10 @@ RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose
 # - Central node gives a solution to an agent when asking for a solution to validate. Central node gives the agent the oldest active
 #   solution submission that the agent did not submit by himself and that the agent has not validated before. The central node will 
 #   only give a solution submission that has at least 30 seconds left for validation. (TODO: or give random instead of oldest active? ask what Joe thinks)
-# - SOLUTION_VALIDATION_CONSENUS_RATIO and SOLUTION_VALIDATION_MIN_CONSENSUS are used to determine if a solution is accepted 
-#   or not - we require a certain ratio of agents to accept the solution and a minimum number of agents to accept the solution.
-#   Be careful to have the SOLUTION_VALIDATION_MIN_CONSENSUS not too low since solution validation phase can be finished before 
-#   time limit and then it is good to have not too low of a value to keep integrity of the platform (but also not too high either).
+# - SOLUTION_VALIDATION_CONSENUS_RATIO is the ratio of positive validations needed to accept a solution out of all agents registered. So the ratio is 0.5 
+#   if we want majority of all agents on the platform to accept the solution. This means that if there are > 50% malicious agents on the platform then 
+#   no solutions will be accepted. NOTE: for proof of concept we assume that all agents are active so we don't need to consider inactive agents in 
+#   the consensus ratio. If we have a lot of inactive agents then it might be difficult to reach the consensus ratio.
 # - SOLUTION_VALIDATION_DURATION is the time limit for the solution validation phase - after this time the solution is accepted 
 #   or rejected based on consensus.
 # - SUCCESSFUL_SOLUTION_SUBMISSION_REWARD is the reward given for an accepted solution submission.
@@ -123,7 +122,7 @@ class CentralNode:
         create_and_init_database(self.db_path)
         self.db_connection = self.__connect_to_database()
 
-        # Counter for generating unique agent ids
+        # Number of agents registered to the platform
         self.agent_counter = 0
 
 
@@ -322,6 +321,9 @@ class CentralNode:
             if results is None:
                 self.logger.error(f"Error while querying database for problem instance {problem_instance_name}")
                 continue
+            if not results:
+                self.logger.error(f"Problem instance {problem_instance_name} not found in database - SHOULD NOT HAPPEN")
+                continue
             reward_accumulated = results[0]["reward_accumulated"]
             reward_budget = results[0]["reward_budget"] 
             # Get current reward accumulated for all solution submissions for this problem instance
@@ -340,6 +342,7 @@ class CentralNode:
                 except sqlite3.Error as e:
                     # On error we just log the error and continue to next iteration of the loop - we will try again next time
                     self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in validation phase loop: {e}")
+                    continue
                 self.logger.info((
                     f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore "
                       "all active solution submissions for this problem instance will be finalized soon"
@@ -373,10 +376,10 @@ class CentralNode:
             objective_value = None
             accepted = False
             if validations and objective_values:
-                # Calculate final status based on validations, e.g. majority vote and minimum number of acceptances
+                # Calculate final status based on validations, e.g. majority vote
                 acceptance_count = sum(validations)
-                acceptance_ratio = acceptance_count / len(validations)
-                if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO and acceptance_count >= SOLUTION_VALIDATION_MIN_CONSENSUS:
+                acceptance_ratio = acceptance_count / self.agent_counter
+                if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO:
                     accepted = True
 
                 # Use the most common objective value of the agents that accepted the solution as the objective value for this solution
