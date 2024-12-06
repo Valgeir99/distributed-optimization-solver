@@ -22,7 +22,7 @@ def start_server():
     """Start the server using uvicorn's Server class."""
     global server
     print("Central node server started")
-    config = uvicorn.Config(app, host="0.0.0.0", port=central_node.port, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=central_node.port, log_level="info", access_log=False)
     server = uvicorn.Server(config)
     
     # Run the server in a separate thread
@@ -549,7 +549,7 @@ async def validate_any_solution():
 
 if __name__ == "__main__":
     try:
-        uvicorn.run(app, host="0.0.0.0", port=central_node.port)
+        uvicorn.run(app, host="0.0.0.0", port=central_node.port, access_log=False)
     except KeyboardInterrupt:
         pass
     finally:
