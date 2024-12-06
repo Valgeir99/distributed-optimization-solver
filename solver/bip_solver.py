@@ -447,7 +447,7 @@ class BIPSolver:
         return True
 
 
-    def validate(self, problem_instance_name: str, solution_data: str, best_platform_obj: float|None) -> tuple[bool, float]:
+    def validate(self, problem_instance_name: str, solution_data: str, best_obj: float|None) -> tuple[bool, float]:
         """
         Validates a solution (feasbile or not) for a binary integer problem (BIP).
         The solution is excpected to be in the format of a .sol file (Miplib format) as described in function "solution_to_sol_file()".    
@@ -455,7 +455,7 @@ class BIPSolver:
         Args:
             problem_instance_name: name of the problem instance
             solution_data: solution data string generated from a .sol file
-            best_platform_obj: objective value of the best solution on the platform
+            best_obj: objective value of the best solution on the platform or best solution found by the agent itself, whichever is better
         Returns:
             tuple:
                 - valid: True if the solution is valid, False otherwise
@@ -504,9 +504,9 @@ class BIPSolver:
             # Calculate the objective value
             objective = np.dot(c, solution)
 
-            # Check if the objective value is better than the best objective value on the platform
+            # Check if the objective value is better than the best objective value on the platform and better than the best objective value found by the agent itself
             if feasible:
-                if best_platform_obj is None or objective < best_platform_obj:
+                if best_obj is None or objective < best_obj:
                     return True, objective
 
             return False, objective

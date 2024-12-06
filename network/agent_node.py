@@ -49,10 +49,14 @@ class ProblemInstanceInfo(TypedDict):
 # - Code not designed to be run in a multi-threaded environment (would need to add locks for shared data if multiple threads)
 # - The agent needs to download problem instance before he can do anything with it (solve, validate, get objective value of solution etc.)
 # - The agent can only solve one problem instance at a time (but can store multiple problem instances)
+# - The agent checks the status of the problem instance before solving it (if it is no longer active the agent will not solve it)
+# - The agent downloads the best solution from the central node before solving a problem instance so he is not submitting a worse solution than the best solution on the platform
 # - The agent solves a problem instance until he finds a better feasible solution than the best solution on the platform, or until MAX_SOLVE_TIME is reached
 # - The agent assumes minimization problems (and solver as well)
 # - The agent and solver are seperate entities BUT they need to have access to the same local file storage
-# - The agent downloads the best solution from the central node before validating a solution (this is the agent's implementation decision)
+# - The agent downloads the best solution from the central node before validating a solution
+# - The agent validates a solution by comparing it to the best solution on the platform and the best solution found by itself (as an agent it is 
+#   logical not to accept a solution that is worse than your own best solution)
 # - The agent keeps track of the best solutions on the platform and the best solutions found by itself
 # - The agent can be malicous or not (malicous agent always returns False when validating a solution)
 
@@ -404,6 +408,7 @@ class AgentNode:
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/download/{problem_instance_name}", headers=self.headers)
         if response.status_code != 200:
             self.logger.error(f"Failed to validate a solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
+            # If no solution to validate then the agent 
             return
         solution = response.json()
 
@@ -427,26 +432,7 @@ class AgentNode:
         # Update the reward he has accumulated for this problem instance
         self.problem_instances[problem_instance_name]["reward_accumulated"] += solution_response["reward"]
 
-        # TODO: ask Joe if we want this or not since this is good to have for us but maybe not general enough if we want to get some test results to see
-        # how the platform could behave in real life when agents would probably not do this - well actually they might do this since they gain solving 
-        # power since now the solver could have access to the best solution on the platform earlier than the validation phase ends! (see below)
-        # TODO: this is also related to which solutions the platform will accept. I have talked about in central node that we might accept solutions even though 
-        # they are not the best one because there might be two improved solution submissions at the same time (but this is not necessarly a bad thing this 
-        # is just the price of having a decentralized system!) - WRITE THIS IN THE REPORT
-        # If the solution was accepted, update the agent's best solution for the platform - NOTE malicous agent should not do this since they accept all solutions
-        # if not self.malicous:
-        #     if validation_result is True:
-        #         try:
-        #             with open(self.problem_instances[problem_instance_name]["best_platform_sol_path"], "w") as file:
-        #                 file.write(solution_data)
-        #             self.problem_instances[problem_instance_name]["best_platform_obj"] = objective_value
-        #         except Exception as e:
-        #             self.logger.error(f"Error when saving best solution to local storage: {e}")
-        #             return
-        #         self.logger.info(f"Agent has now updated the platform's best solution for problem instance {problem_instance_name} with objective value {objective_value}")
-
         self.logger.info(f"Solution submission {solution_submission_id} for problem instance {problem_instance_name} validated successfully and agent collected reward ({solution_response["reward"]} coins).")
-
 
 
 
@@ -471,12 +457,13 @@ class AgentNode:
             return False, -1
         
         try:
-            # Validate the solution
-            valid, obj_value = self.solver.validate(problem_instance_name, solution_data, self.problem_instances[problem_instance_name]["best_platform_obj"])
+            # Validate the solution - input the better objective value of the best solution on the platform and the best solution found by the agent
+            obj_best = min((self.problem_instances[problem_instance_name]["best_platform_obj"], self.problem_instances[problem_instance_name]["best_self_obj"]), key=lambda x: (x is None, x))
+            valid, obj_value = self.solver.validate(problem_instance_name, solution_data, obj_best)
             if valid:
-                self.logger.info(f"Solution is valid! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_platform_obj"]}")
+                self.logger.info(f"Solution is valid! Comparing objective values: new objective is {obj_value} and old objective is {obj_best}")
             else:
-                self.logger.info(f"Solution is NOT valid! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_platform_obj"]}")
+                self.logger.info(f"Solution is NOT valid! Comparing objective values: new objective is {obj_value} and old objective is {obj_best}")
             return valid, obj_value
         except Exception as e:
             self.logger.error(f"Error when validating solution: {e}")
