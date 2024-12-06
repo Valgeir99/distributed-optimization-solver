@@ -4,6 +4,7 @@ import numpy as np
 import pulp as pl
 from typing import Tuple
 import time
+import os
 #from scipy.sparse import csr_matrix
 
 # NOTE: since agents will be able to change the state of the solver we need to make sure to always check the state of the solver before we do anything with self.problem_data
@@ -183,19 +184,24 @@ class BIPSolver:
         
         Args: 
             problem_instance_name: name of the problem instance
-        Raises:
-            Exception: if the problem instance does not exist in the solver
         """
         if problem_instance_name not in self.problem_data:
-            raise ValueError(f"Problem instance '{problem_instance_name}' not found in solver.")
+            return
         
         del self.problem_data[problem_instance_name]
 
     
-    def _generate_random_bip_solution(self, problem_instance_name) -> Tuple[bool, np.array, float]:
+    def _generate_random_bip_solution(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float]:
         """
         Generates a random feasible solution for a binary integer problem in some time limit.
-
+        Args:
+            problem_instance_name: name of the problem instance
+            max_time: maximum time to generate a solution in seconds
+        Returns:
+            tuple:
+                - feasible: True if a feasible solution is found, False otherwise
+                - solution: solution array
+                - obj: objective value of the solution
         """
         # Unpack the problem data
         c = self.problem_data[problem_instance_name]["c"]
@@ -203,42 +209,28 @@ class BIPSolver:
         rhs = self.problem_data[problem_instance_name]["rhs"]
         constraint_types = self.problem_data[problem_instance_name]["constraint_types"]
 
-        # print("number of variables", A.shape[1])
-        # print("number of constraints", A.shape[0])
-
-        max_contraints_holding = 0
-        elapsed_time = 0
-        max_time = 120  # seconds
-
-        # TODO: add randomness!
-
-        # Start with all variables set to 0
-        #solution = np.zeros(len(c))
+        # Start with random solution
         solution = np.random.randint(0, 2, len(c))
 
-        # Loop until a feasible solution is found
+        # Loop until a feasible solution is found within the time limit
+        max_contraints_holding = 0
+        elapsed_time = 0
         iter = 0
-        #for _ in range(10000):
+        iter_stuck = 0   # number of iterations with no improvement in number of contraints holding
+        RANDOM_RESTART_ITER = 10000
+        constraints_holding_prev_iter = 0
         while elapsed_time < max_time:
             start_time = time.time()
             constraints_holding = 0
             iter += 1
             
-
-            # Iterate over constraints and flip variables until a feasible solution is found
-            #for i, constraint in enumerate(A):
+            # Iterate over constraints in random order and flip variables that create the biggest violation of each contraint until 
+            # the contraint is satisfied (note that by making one contraint satisfied we might violate another)
             for i in np.random.permutation(A.shape[0]):   # try iterating over contraints randomly
                 constraint = A[i]
                 lhs = np.dot(solution, constraint)
-                #print("constraint", constraint)
-                #print("lhs", lhs, "rhs", rhs[i])
-                # TODO: make function for this since it is repeated in the equal case
-                # TODO: maybe better to introduce randomness here instead of flippinng variable with most influence (could be slower convergance but more likely to find solution in the end?)
                 if constraint_types[i] == 'L' and lhs > rhs[i]:
-                    #print("contraint number ", i)
                     while lhs > rhs[i]:
-                        #print("lhs is greater than rhs")
-                        #print("lhs", lhs, "rhs", rhs[i])
                         # Select a variable with high contribution to the constraint (can be positive or negative) and set it to 
                         # 0 if positive and 1 if negative since we want to increase the lhs
                         idx_positive = np.argmax(constraint * solution)   # we only want variables that are currently 1 and will have negative contribution (increasing the lhs) if set to 0
@@ -249,15 +241,10 @@ class BIPSolver:
                         if abs(a_positive) >= abs(a_negative):
                             solution[idx_positive] = 0
                         else:
-                            #print("idx_negative", idx_negative, "a_negative", a_negative)
                             solution[idx_negative] = 1
                         lhs = np.dot(solution, constraint)
-                        #print("lhs", lhs, "rhs", rhs[i])
                 elif constraint_types[i] == 'G' and lhs < rhs[i]:
-                    #print("contraint number ", i)
                     while lhs < rhs[i]:
-                        #print("lhs is less than rhs")
-                        #print("lhs", lhs, "rhs", rhs[i])
                         # Select a variable with high contribution to the constraint (can be positive or negative) and set it to 
                         # 1 if positive and 0 if negative since we want to decrease the lhs
                         idx_positive = np.argmax(constraint * (1 - solution))   # we only want variables that are currently 0 and will have positive contribution (increasing the lhs) if set to 1
@@ -268,15 +255,10 @@ class BIPSolver:
                         if abs(a_positive) >= abs(a_negative):   # TODO: maybe if equal then select randomly
                             solution[idx_positive] = 1
                         else:
-                            #print("idx_negative", idx_negative, "a_negative", a_negative)
                             solution[idx_negative] = 0
                         lhs = np.dot(solution, constraint)
-                        #print("lhs", lhs, "rhs", rhs[i])
                 elif constraint_types[i] == 'E' and lhs != rhs[i]:
-                    #print("contraint number ", i)
                     while lhs != rhs[i]:
-                        #print("lhs is not equal to rhs")
-                        #print("lhs", lhs, "rhs", rhs[i])
                         if lhs > rhs[i]:
                             # Select a variable with high contribution to the constraint (can be positive or negative) and set it to
                             # 0 if positive and 1 if negative since we want to decrease the lhs
@@ -288,10 +270,8 @@ class BIPSolver:
                             if abs(a_positive) >= abs(a_negative):
                                 solution[idx_positive] = 0
                             else:
-                                #print("idx_negative", idx_negative, "a_negative", a_negative)
                                 solution[idx_negative] = 1
                             lhs = np.dot(solution, constraint)
-                            #print("lhs", lhs, "rhs", rhs[i])
                         elif lhs < rhs[i]:
                             # Select a variable with high contribution to the constraint (can be positive or negative) and set it to
                             # 1 if positive and 0 if negative since we want to increase the lhs
@@ -303,89 +283,28 @@ class BIPSolver:
                             if abs(a_positive) >= abs(a_negative):
                                 solution[idx_positive] = 1
                             else:
-                                #print("idx_negative", idx_negative, "a_negative", a_negative)
                                 solution[idx_negative] = 0
                             lhs = np.dot(solution, constraint)
-                            #print("lhs", lhs, "rhs", rhs[i])
 
-            # Do equality constraints last since they are the most difficult to satisfy?
-            # for i, constraint in enumerate(A):
-            #     lhs = np.dot(solution, constraint)
-            #     if constraint_types[i] == 'E' and lhs != rhs[i]:
-            #         print("contraint number ", i)
-            #         while lhs != rhs[i]:
-            #             print("lhs is not equal to rhs")
-            #             print("lhs", lhs, "rhs", rhs[i])
-            #             if lhs > rhs[i]:
-            #                 # Select a variable with high contribution to the constraint (can be positive or negative) and set it to
-            #                 # 0 if positive and 1 if negative since we want to decrease the lhs
-            #                 idx_positive = np.argmax(constraint * solution)   # we only want variables that are currently 1 and will have negative contribution (increasing the lhs) if set to 0
-            #                 idx_negative = np.argmin(constraint * (1 - solution))   # we only want variables that are currently 0 and will have negative contribution (increasaing the lhs) if set to 1
-            #                 # Select which one is higher
-            #                 a_positive = constraint[idx_positive]
-            #                 a_negative = constraint[idx_negative]
-            #                 if abs(a_positive) > abs(a_negative):
-            #                     solution[idx_positive] = 0
-            #                 else:
-            #                     #print("idx_negative", idx_negative, "a_negative", a_negative)
-            #                     solution[idx_negative] = 1
-            #                 lhs = np.dot(solution, constraint)
-            #                 print
-            #             elif lhs < rhs[i]:
-            #                 # Select a variable with high contribution to the constraint (can be positive or negative) and set it to
-            #                 # 1 if positive and 0 if negative since we want to increase the lhs
-            #                 idx_positive = np.argmax(constraint * (1 - solution))   # we only want variables that are currently 0 and will have positive contribution (increasing the lhs) if set to 1
-            #                 idx_negative = np.argmin(constraint * solution)   # we only want variables that are currently 1 and will have positive contribution (increasing the lhs) if set to 0
-            #                 # Select which one is higher
-            #                 a_positive = constraint[idx_positive]
-            #                 a_negative = constraint[idx_negative]
-            #                 if abs(a_positive) > abs(a_negative):
-            #                     solution[idx_positive] = 1
-            #                 else:
-            #                     #print("idx_negative", idx_negative, "a_negative", a_negative)
-            #                     solution[idx_negative] = 0
-            #                 lhs = np.dot(solution, constraint)
-            #                 print("lhs", lhs, "rhs", rhs[i])
-
-
-                
-            # Check feasibility
+                           
+            # Flip one variable that is breaking a random constraint (and check feasibility)
             feasible = True
-            # for i, constraint in enumerate(A):
-            #     lhs = np.dot(solution, constraint)
-            #     if constraint_types[i] == 'L' and lhs > rhs[i]:
-            #         feasible = False
-            #         break
-            #     elif constraint_types[i] == 'G' and lhs < rhs[i]:
-            #         feasible = False
-            #         break
-            #     elif constraint_types[i] == 'E' and lhs != rhs[i]:
-            #         feasible = False
-            #         break
-            #     iter += 1
-
-            #for i, constraint in enumerate(A):
             for i in np.random.permutation(A.shape[0]):
                 constraint = A[i]
                 lhs = np.dot(solution, constraint)
-                #print("constraint", constraint)
-                #print("lhs", lhs, "rhs", rhs[i])
                 if constraint_types[i] == 'L' and lhs > rhs[i]:
-                    #print("lhs is greater than rhs")
                     # Flip a random variable contributing to violation
-                    idx = np.random.choice(np.where(constraint != 0)[0])   # TODO: think about here and for 'G' if I should flip a random variable or the one with the highest contribution
+                    idx = np.random.choice(np.where(constraint != 0)[0])
                     solution[idx] = 1 - solution[idx]
                     feasible = False
                     break
                 elif constraint_types[i] == 'G' and lhs < rhs[i]:
-                    #print("lhs is less than rhs")
                     # Flip a random variable contributing to violation
                     idx = np.random.choice(np.where(constraint != 0)[0])
                     solution[idx] = 1 - solution[idx]
                     feasible = False
                     break
                 elif constraint_types[i] == 'E' and lhs != rhs[i]:
-                    #print("lhs is not equal to rhs")
                     # Flip a random variable contributing to violation
                     idx = np.random.choice(np.where(constraint != 0)[0])
                     solution[idx] = 1 - solution[idx]
@@ -393,46 +312,36 @@ class BIPSolver:
                     break
                 constraints_holding += 1
 
-            # Check feasibility
-            # for i, constraint in enumerate(A):
-            #     lhs = np.dot(solution, constraint)
-            #     if constraint_types[i] == 'L' and lhs > rhs[i]:
-            #         feasible = False
-            #         break
-            #     elif constraint_types[i] == 'G' and lhs < rhs[i]:
-            #         feasible = False
-            #         break
-            #     elif constraint_types[i] == 'E' and lhs != rhs[i]:
-            #         feasible = False
-            #         break
-            #     constraints_holding += 1
-
-            #print("number of contraints holding:", constraints_holding)
-
+            
             if constraints_holding > max_contraints_holding:
-                print("max number of constraints holding:", constraints_holding)
                 max_contraints_holding = constraints_holding
 
             if feasible:
-                print("feasible solution found!!!!")
-                print("number of iterations:", iter)
+                #print("feasible solution found!!!!")
+                #print("number of iterations:", iter)
                 obj = np.dot(c, solution)
                 return True, solution, obj
             
+            if constraints_holding_prev_iter <= constraints_holding:
+                iter_stuck += 1
+                
+            if iter_stuck > RANDOM_RESTART_ITER:
+                #print("stuck in infeasible solution - start from new random solution")
+                solution = np.random.randint(0, 2, len(c))
+                iter_stuck = 0
+            
             elapsed_time += time.time()-start_time
+            constraints_holding_prev_iter = constraints_holding
 
-            # Go over contraints again that are still violated and flip variables - repair phase
-            #for i, constraint in enumerate(A):
-
-        print("max number of constraints holding:", max_contraints_holding)
-        print("number of iterations:", iter)
+        #print("feasible solution not found")
+        #print("max number of constraints holding:", max_contraints_holding)
+        #print("number of iterations:", iter)
 
 
         return False, solution, -1
     
 
-    # TODO: maybe not have this private and we will call this from the agent depending on what the result form the solver will be
-    def _solution_to_sol_file(self, problem_instance_name:str, file: str, solution: np.array, obj: float):
+    def _solution_to_sol_file(self, problem_instance_name: str, file: str, solution: np.array, obj: float):
         """
         Writes a solution to a .sol file (we define format as Miplib's format - first line empty, then 
         objective value and then variables values line by line). The objective value line first has "=obj="
@@ -444,81 +353,73 @@ class BIPSolver:
             file: path to the .sol file
             solution: solution array
             obj: objective value
-        Raises:
-            Exception: if there is an error writing the solution to the .sol file
+        Returns:
+            solution_data: solution data string generated from a .sol file
         """
+        # Get solution data on correct format
         variable_names = self.problem_data[problem_instance_name]["var_names"]
+        solution_data = ""
+        solution_data += "\n"
+        solution_data += f"=obj= {obj}\n"
+        for i, val in enumerate(solution):
+            solution_data += f"{variable_names[i]} {int(val)}\n"
+        
+        # Write the solution to the .sol file
         try:
             with open(file, "w") as f:
-                f.write("\n")
-                f.write(f"=obj= {obj}\n")
-                for i, val in enumerate(solution):
-                    f.write(f"{variable_names[i]} {int(val)}\n")
+                f.write(solution_data)
         except Exception as e:
-            raise Exception(f"Error writing solution to .sol file: {e}") from e
+            pass   # not so important to raise exception here
+            #raise Exception(f"Error writing solution to .sol file: {e}") from e
+        finally:
+            return solution_data
+        
 
-
-    # TODO: Now we are just generating a single solution not necessarily the best solution and we are not checking if the solution is better than the best solution
-    def solve(self, problem_instance_name: str, best_self_sol_path: str, best_platform_sol_path: str):
+    def solve(self, problem_instance_name: str, best_self_sol_path: str|None, best_platform_obj: float|None, max_solve_time: int) -> Tuple[bool, float]:
         """
-        Solves a binary integer problem.
+        Solves a binary integer problem. 
         It writes the solution to a .sol file. ... TODO ?
         
         Args:
             problem_instance_name: name of the problem instance
             best_self_sol_path: path to the .sol file where the best solution found by the solver will be written
-            best_platform_sol_path: path to the .sol file where the best solution on the platform is stored
+            best_platform_obj: objective value of the best solution on the platform
+            max_solve_time: maximum time to solve the problem in seconds
         Returns:
             tuple:
-                - found: True if a feasible solution is found, False otherwise
-                - solution_data: solution data string generated from a .sol file
+                - found: True if an improved feasible solution is found, False otherwise
                 - obj: objective value of the solution
         Raises:
             Exception: if solving fails
         """
-        # TODO: need to rethink this whole function!!
-
         try:
+            found = False
+            obj = None
+            solution_data = ""
+
             # Check if the problem has registered to the solver
             if problem_instance_name not in self.problem_data:
                 raise ValueError(f"Problem instance '{problem_instance_name}' not found in solver.")
-                        
-            # Generate a random feasible solution
-            print("Solving problem:", problem_instance_name)
-            # TODO: if we use subprocess then we might want to have a wrapper function that calls this function and only
-            # returns the solution if it is imporving the best solution
-            # TODO: we probably want to have some loop here so we can run this multiple times and then return the best solution?
-            # But we need to think about that in regards to the subprocess thing since we don't want to start a new process 
-            # every time...
-            found, solution, obj = self._generate_random_bip_solution(problem_instance_name)
-            # TODO: depending on solver we will use we might want to return different stuff if solver find a better solution or not (maybe only have exception if solver fails but 
-            # not if it doesn't find a better solution?)
-
-            solution_data = ""
-            # TODO: we should only write the solution to a file if it is better than the best solution on the platform! (but now we are doing it every time)
-            if found:
-                # Write the solution to a .sol file
-                self._solution_to_sol_file(problem_instance_name, best_self_sol_path, solution, obj)    #TODO: maybe we should not write to file here but in agent code instead?
-                print("Solution written to", best_self_sol_path)
-
-                with open(best_self_sol_path, "r") as f:   # TODO: just a temp solution to get the solution data
-                    solution_data = f.read()
-            else:
-                print("No feasible solution found")
-
-            return found, solution_data, obj
+            
+            # Solve until we find an improved feasible solution or time runs out
+            elapsed_time = 0
+            start_time = time.time()
+            while elapsed_time < max_solve_time:        
+                # Generate a random feasible solution
+                feasible, solution, obj = self._generate_random_bip_solution(problem_instance_name, max_solve_time)
+                if feasible:
+                    if best_platform_obj is None or obj < best_platform_obj:
+                        found = True
+                        # Write the solution to a .sol file
+                        solution_data = self._solution_to_sol_file(problem_instance_name, best_self_sol_path, solution, obj)
+                        break
+                elapsed_time += time.time() - start_time
+                    
+            return found, obj, solution_data
         
         except Exception as e:
             # General error handling to propagate to the calling function
             raise Exception(f"Error when calling solve: {str(e)}") from e
-
-
-        # TODO: check if the problem is actually improving the best solution? - depends how we want to use this function (just remember that 
-        # we don't have access to the agent node data from here since I want the solver to be generic so it could be e.g. C solver or commercial 
-        # like gurobi). So 
-        # Also note that it is not a good idea to run this function as a subprocess if we call it muliple times, we would rather 
-        # just call it single time and then not return anything but just save the solution to a file and then read that file 
-        # from the agent node I guess...?
 
 
     @staticmethod
@@ -546,7 +447,7 @@ class BIPSolver:
         return True
 
 
-    def validate(self, problem_instance_name: str, solution_data: str) -> Tuple[bool, float]:
+    def validate(self, problem_instance_name: str, solution_data: str, best_platform_obj: float|None) -> tuple[bool, float]:
         """
         Validates a solution (feasbile or not) for a binary integer problem (BIP).
         The solution is excpected to be in the format of a .sol file (Miplib format) as described in function "solution_to_sol_file()".    
@@ -554,10 +455,11 @@ class BIPSolver:
         Args:
             problem_instance_name: name of the problem instance
             solution_data: solution data string generated from a .sol file
+            best_platform_obj: objective value of the best solution on the platform
         Returns:
             tuple:
-                - feasible: True if a feasible solution is found, False otherwise
-                - obj: objective value of the solution
+                - valid: True if the solution is valid, False otherwise
+                - objective: objective value of the solution
         Raises:
             Exception: if problem can not be validated
         """
@@ -602,8 +504,12 @@ class BIPSolver:
             # Calculate the objective value
             objective = np.dot(c, solution)
 
-            return feasible, objective   # TODO: maybe we don't want to return the objective value? Also maybe we want to compare best solution on platform with this solution? So we 
-            # would input that objecticve value also...
+            # Check if the objective value is better than the best objective value on the platform
+            if feasible:
+                if best_platform_obj is None or objective < best_platform_obj:
+                    return True, objective
+
+            return False, objective
 
         except Exception as e:
             # General error handling to propagate to the calling function

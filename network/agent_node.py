@@ -22,8 +22,11 @@ EXPERIMENT_DATA_DIR = None
 LOG_FILE_PATH = None
 AGENT_REWARDS_DIR = None
 
-# Other constants
-SOLVE_ITERATIONS = 1   # number of times to run the solver for each problem instance when solving TODO if we use this then move to experiment file
+# Constants
+MAX_SOLVE_TIME = 300   # maximum time that agents spends finding a feasible solution for a problem instance in seconds TODO: not sure about this!! YES I think we should have this (but not sure about the value)
+# One good thing about this is that we are using a random solver which means that in most cases the solver won't give a better solution than the best solution on the platform
+# so instead of calling the agent solve function multiple times (with the overhead of for example doqnloading the best solution from the central node) we can just set a max solve time
+# and if the solver does not find a better solution in that time we can just stop the solver and move on. I think we should inclue yes
 
 
 class ProblemInstanceInfo(TypedDict):
@@ -41,18 +44,17 @@ class ProblemInstanceInfo(TypedDict):
     active_solution_submission_ids: Set[str]  # Set of solution submission ids that the agent is waiting for submission status for
     active: bool   # True if the problem instance is still active on the platform, False otherwise
 
-    # TODO: maybe don't have this data structure fixed now we might discover that we need to store more information later on
-    # Need to implement you know the solution phase and maybe validation also before
-    # Do we actually want to use flags to indicate if this problme instance is being solved or not? and also if it is being validated or not?
-
 
 # Some design NOTE:
 # - Code not designed to be run in a multi-threaded environment (would need to add locks for shared data if multiple threads)
 # - The agent needs to download problem instance before he can do anything with it (solve, validate, get objective value of solution etc.)
 # - The agent can only solve one problem instance at a time (but can store multiple problem instances)
+# - The agent solves a problem instance until he finds a better feasible solution than the best solution on the platform, or until MAX_SOLVE_TIME is reached
 # - The agent assumes minimization problems (and solver as well)
 # - The agent and solver are seperate entities BUT they need to have access to the same local file storage
-# - Solving strategy TODO
+# - The agent downloads the best solution from the central node before validating a solution (this is the agent's implementation decision)
+# - The agent keeps track of the best solutions on the platform and the best solutions found by itself
+# - The agent can be malicous or not (malicous agent always returns False when validating a solution)
 
 class AgentNode:
     # TODO: fix
@@ -197,6 +199,8 @@ class AgentNode:
         if it exists.
         Args:
             problem_instance_name: The name of the problem instance to download
+        Returns:
+            problem_instance_name: The name of the problem instance that was downloaded | None if the problem instance was not downloaded
         """
         self.logger.info(f"Request to downloaod problem instance {problem_instance_name}...")
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}", headers=self.headers)
@@ -266,6 +270,8 @@ class AgentNode:
             message += f"... and its best solution as well with objective value {best_platform_obj}"
 
         self.logger.info(message)
+
+        return problem_instance_name
 
 
     def update_problem_instance_status(self, problem_instance_name: str):
@@ -387,8 +393,6 @@ class AgentNode:
         # Check if agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
             self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
-            # TODO: here we can download the problem instance so that we can validate the solution - change log message to info and add download here - well maybe we don't want that
-            # actually just too keep the agent node simple and not do too much stuff automatically...
             return
         
         # Check if the problem instance is still active on the platform - since validating is not so expensive we will NOT update the status but only check in memory data
@@ -420,24 +424,26 @@ class AgentNode:
             return
         solution_response = response.json()
         
-        # Update the reward he has accumulated for this problem instance TODO: migh have to use lock if we are running agent even loop async
+        # Update the reward he has accumulated for this problem instance
         self.problem_instances[problem_instance_name]["reward_accumulated"] += solution_response["reward"]
 
         # TODO: ask Joe if we want this or not since this is good to have for us but maybe not general enough if we want to get some test results to see
         # how the platform could behave in real life when agents would probably not do this - well actually they might do this since they gain solving 
         # power since now the solver could have access to the best solution on the platform earlier than the validation phase ends! (see below)
-
+        # TODO: this is also related to which solutions the platform will accept. I have talked about in central node that we might accept solutions even though 
+        # they are not the best one because there might be two improved solution submissions at the same time (but this is not necessarly a bad thing this 
+        # is just the price of having a decentralized system!) - WRITE THIS IN THE REPORT
         # If the solution was accepted, update the agent's best solution for the platform - NOTE malicous agent should not do this since they accept all solutions
-        if not self.malicous:
-            if validation_result is True:
-                try:
-                    with open(self.problem_instances[problem_instance_name]["best_platform_sol_path"], "w") as file:
-                        file.write(solution_data)
-                    self.problem_instances[problem_instance_name]["best_platform_obj"] = objective_value
-                except Exception as e:
-                    self.logger.error(f"Error when saving best solution to local storage: {e}")
-                    return
-                self.logger.info(f"Agent has now updated the platform's best solution for problem instance {problem_instance_name} with objective value {objective_value}")
+        # if not self.malicous:
+        #     if validation_result is True:
+        #         try:
+        #             with open(self.problem_instances[problem_instance_name]["best_platform_sol_path"], "w") as file:
+        #                 file.write(solution_data)
+        #             self.problem_instances[problem_instance_name]["best_platform_obj"] = objective_value
+        #         except Exception as e:
+        #             self.logger.error(f"Error when saving best solution to local storage: {e}")
+        #             return
+        #         self.logger.info(f"Agent has now updated the platform's best solution for problem instance {problem_instance_name} with objective value {objective_value}")
 
         self.logger.info(f"Solution submission {solution_submission_id} for problem instance {problem_instance_name} validated successfully and agent collected reward ({solution_response["reward"]} coins).")
 
@@ -465,41 +471,23 @@ class AgentNode:
             return False, -1
         
         try:
-            feasible, obj_value = self.solver.validate(problem_instance_name, solution_data)
-            if feasible:
-                # Compare the objective value with the agent's best known solution - NOTE: ASSUME ONLY MINIMIZATION PROBLEMS
-                valid = False
-                if self.problem_instances[problem_instance_name]["best_platform_obj"] is None or obj_value < self.problem_instances[problem_instance_name]["best_platform_obj"]:
-                    valid = True
-                self.logger.info(f"Solution is feasible! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_platform_obj"]}")
-                return valid, obj_value
+            # Validate the solution
+            valid, obj_value = self.solver.validate(problem_instance_name, solution_data, self.problem_instances[problem_instance_name]["best_platform_obj"])
+            if valid:
+                self.logger.info(f"Solution is valid! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_platform_obj"]}")
             else:
-                self.logger.info("Solution is not feasible")
-                return False, -1
+                self.logger.info(f"Solution is NOT valid! Comparing objective values: new objective is {obj_value} and old objective is {self.problem_instances[problem_instance_name]["best_platform_obj"]}")
+            return valid, obj_value
         except Exception as e:
             self.logger.error(f"Error when validating solution: {e}")
             return False, -1        
 
-
-
-    # TODO: we want the solver to be a modular piece that can be easily replaced with another solver - so to have it like that 
-    # we cannot have any return values or anything like that since we need to run it in different thread/process so I guess we would 
-    # always need to either pass in mutable objects that we would change during the solving process and use that (like dict with fields for 
-    # the objective and if the solution was found). We could have a python wrapper for all solvers that we want to use and then we can just call the wrapper function?
-    # That is a good idea but still we would always need to call the wrapper in a seperate thread or process so that we can run it 
-    # in parallel with the agent node. If we do wrapper and have e.g. process inside the wrapper that runs a C solver then we would still 
-    # need to have like a file writing mechanism I guess to get the solution back to the agent node...?
-
         
-
-    # NOTE: this function should preferably be run on a seperate thread I think (but we cannot run it as a seperate process since we need to share the data with the agent node)
-    # However, the solver itself should be able to run as a seperate process since it is a seperate program (becasue we want to be able to use different solvers, even 
-    # C solver or commercial solver that we cannot run in the same process as the agent node)
     def solve_problem_instance(self, problem_instance_name: str):
-        """Solve a problem instance that the agent has stored. The agent will solve the problem instance 
-        in a seperate thread or process so that it can continue to run its event loop and communicate with the central node.
-        TODO should we then have the requirement to call this function in a seperate thread or process?"""
+        """Solve a problem instance that the agent has downloaded."""
+
         self.logger.info(f"Starting to solve problem instance {problem_instance_name}...")
+
         # Check if the agent is already solving a problem instance
         if self.solving_problem_instance_name:
             self.logger.error(f"Agent is already solving problem instance {self.solving_problem_instance_name}")
@@ -519,64 +507,30 @@ class AgentNode:
         # Set the problem instance that the agent is solving
         self.solving_problem_instance_name = problem_instance_name
 
-        # Solve the problem instance - loop until some stopping criterion is met? TODO: now I just solve it x times but we should also definately check problem instance 
-        # status to see if it is still active or not before we start solving it every time
-        # Depends also what kind of solver we use and if we will allow that solver to have access to the best solution known on the platform...
+        # Get the best solution from the central node so that we don't submit a solution that is worse than the best solution on the platform
+        self.download_best_solution(problem_instance_name)
 
-        for _ in range(SOLVE_ITERATIONS):
-
-            # Check if the problem instance is still active on the platform
-            # TODO: need to first implement http endpoint for this in the central node (check_problem_instance_status)
-
-            # Generate a solution using a solver - we can run the solver on a seperate thread or process if we want 
-            try:
-                # This takes a long time so we should run it on a seperate thread or process
-                #solution_thread = threading.Thread(target=solver.solve_bip, args=(self.problem_instances[problem_instance_name]["instance_file_path"], self.problem_instances[problem_instance_name]["best_self_sol_path"]))
-                #solution_thread.start()
-                sol_found, solution_data, obj = self.solver.solve(problem_instance_name, self.problem_instances[problem_instance_name]["best_self_sol_path"], "best_platform_sol_path")   # TODO: change or fix "best_platform_sol_path" to be the correct path
-            except Exception as e:
-                self.logger.error(f"Error when solving problem instance {problem_instance_name}: {e}")   # TODO: not sure how we want to log solver errors - if doing properly we would need to raise exception in the solver and catch it here
-                self.solving_problem_instance_name = None
-                return   # TODO: do something
-
-            # If found a solution...
+        # Generate a better solution than the best one on the platform using the solver
+        try:
+            sol_found, obj, solution_data = self.solver.solve(problem_instance_name, self.problem_instances[problem_instance_name]["best_self_sol_path"], 
+                                                              self.problem_instances[problem_instance_name]["best_platform_obj"], max_solve_time=MAX_SOLVE_TIME)   # TODO: what to do with max solve time?
             if sol_found:
-
-                # Read solution from file that the solver has written   TODO: maybe we do this instead of returning the solution data from the solver?
-                # with open(self.problem_instances[problem_instance_name]["best_self_sol_path"], "r") as file:
-                #     solution_data = file.read()
-
-                # Submit the solution on the platform if it is the best solution found by the agent (send request to central node) TODO check here or in solver if best solution (or both even)
+                self.logger.info(f"Found a improved solution found for problem instance {problem_instance_name} with objective value {obj}")
+                # Submit the solution to the central node
                 self.submit_solution(problem_instance_name, solution_data)
-
-                # Update the agent's best solution
+                # Update the agent's best solution found by itself (already written to local storage in solve() function above)
                 self.problem_instances[problem_instance_name]["best_self_obj"] = obj
-
-                # TODO: would also make sense to save to file here but I think I already did that in the solver so maybe we should change that for consistency!
-
             else:
-                # TODO
-                pass
+                self.logger.info(f"Did not find a improved solution for problem instance {problem_instance_name}")
 
+        except Exception as e:
+            self.logger.error(f"Error when solving problem instance {problem_instance_name}: {e}")    
         
-        # After loop is done, set the solving problem instance to None
+        # After solving is done, set the solving problem instance to None
         self.solving_problem_instance_name = None
 
         self.logger.info(f"Stopped solving problem instance {problem_instance_name}")
 
-
-        # Not sure what we will do here exactly...
-        # It should be generic enough so that I can maybe easily use different solvers
-        # Maybe I will start with a python solver that is just a script (or maybe a class) that
-        # solves it (not sure if I want to have there or here to check if the solution is best in network or 
-        # not but that functionality should be easy to add later on)
-        # I will definitely run it on a seperate thread but maybe even as a seperate process
-
-
-    def stop_solving_problem_instance(self):
-        """Stop solving the problem instance that the agent is currently solving."""
-        # TODO: need to implement some way to stop the solver - maybe have a event or signal that the solver listens to?
-        pass
 
 
     ## Agent helper functions ##
