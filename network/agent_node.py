@@ -159,7 +159,7 @@ class AgentNode:
         Raises:
             Exception: If the agent node fails to get an id from the central node
         """
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/agent/register")
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/register")
         if response.status_code != 200:
             raise Exception(f"Agent node cannot start - Failed to get id from central node - HTTP Error {response.status_code}: {response.text}")
         return response.json()["agent_id"]
@@ -345,7 +345,7 @@ class AgentNode:
         """Submit a solution to the central node get solution submission id in response
         so that agent can track the status of the solution submission."""
         self.logger.info(f"Request to submit solution for problem instance {problem_instance_name}...")
-        response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/upload/{problem_instance_name}", 
+        response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/{problem_instance_name}", 
                               json={"solution_data": solution_data},
                               headers=self.headers)
         if response.status_code != 200:
@@ -361,7 +361,7 @@ class AgentNode:
         Once the solution submission is validated, the agent will update the reward he has accumulated for this problem 
         instance and remove the solution submission from active solution submissions."""
         self.logger.info(f"Request to check status of solution submission {solution_submission_id}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/status/{solution_submission_id}", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/status/{solution_submission_id}", headers=self.headers)
         if response.status_code != 200:
             self.logger.error(f"Failed to check status of solution submission {solution_submission_id} - HTTP Error {response.status_code}: {response.text}")
             return

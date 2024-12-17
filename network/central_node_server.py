@@ -14,7 +14,11 @@ from .central_node import CentralNode
 
 
 # Create FastAPI application and put it in the central node class
-app = FastAPI()
+app = FastAPI(
+    title="Distributed Optimization Solver API",
+    description="""API endpoints offered by server node to the agent nodes as a part of the \
+    distributed optimization solver platform."""
+)
 central_node = CentralNode(app)
 server = None
 
@@ -78,12 +82,11 @@ class SolutionValidationRequest(BaseModel):
 
 
 ##---- Routes for the central node server ---##
-# TODO: possibly rename enpoint urls to be more descriptive: https://chatgpt.com/c/67335c94-2fd0-8003-8cb5-77a97f76137c
 
-@app.get("/agent/register", response_model=AgentIDResponse)
+@app.get("/register", response_model=AgentIDResponse)
 async def register_agent() -> AgentIDResponse:
-    """Agent registers to the platform. Central node generates a unique id and returns it to 
-    the agent."""
+    """Agent registers to the platform. Server node generates a unique id and returns it to 
+    the agent that uses the id to identificate himself for all other API requests."""
     agent_id = central_node.register_agent_to_platform()
     if agent_id is None:
         raise HTTPException(status_code=500, detail="Could not register agent to the platform! Try again later.")
@@ -93,7 +96,7 @@ async def register_agent() -> AgentIDResponse:
 @app.get("/problem_instances/info", response_model=list[ProblemInstanceResponse])
 async def get_problem_instances_info(agent_id: str = Header(...)) -> list[ProblemInstanceResponse]:
     """Agent requests information about a pool of problem instances so he can download one (or more) 
-    of them later. Returns a list of problem instances with their names and descriptions."""
+    of them later using problem instance name. Returns a list of problem instances with their names and descriptions."""
     # Check if agent exists - we require the agent id to be sent in the header
     if not agent_id:
         raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
@@ -122,7 +125,7 @@ async def get_problem_instances_info(agent_id: str = Header(...)) -> list[Proble
 
 
 @app.get("/problem_instances/download/{problem_instance_name}", response_model=ProblemInstanceResponse)
-async def get_problem_instance_data_by_id(problem_instance_name: str, agent_id: str = Header(...)) -> ProblemInstanceResponse:
+async def download_problem_instance_data_by_id(problem_instance_name: str, agent_id: str = Header(...)) -> ProblemInstanceResponse:
     """Agent requests a problem instance to download. Returns the problem instance data and best 
     solution on the platform if available."""
     # Check if agent exists - we require the agent id to be sent in the header
@@ -193,7 +196,7 @@ async def get_problem_instance_data_by_id(problem_instance_name: str, agent_id: 
 
 @app.get("/problem_instances/status/{problem_instance_name}", response_model=ProblemInstanceStatusResponse)
 def check_problem_instance_status(problem_instance_name: str, agent_id: str = Header(...)) -> ProblemInstanceStatusResponse:
-    """Agent checks if the problem instance is active. Returns True if the problem instance is active,
+    """Agent checks if the problem instance is active on the platform. Returns True if the problem instance is active,
     False otherwise."""
     # Check if agent exists - we require the agent id to be sent in the header
     if not agent_id:
@@ -220,13 +223,13 @@ def check_problem_instance_status(problem_instance_name: str, agent_id: str = He
     return ProblemInstanceStatusResponse(active=result[0]["active"])
 
 
-@app.post("/solutions/upload/{problem_instance_name}", response_model=SolutionSubmissionResponse)
-async def upload_solution(problem_instance_name: str, 
+@app.post("/solutions/submit/{problem_instance_name}", response_model=SolutionSubmissionResponse)
+async def submit_solution(problem_instance_name: str, 
                           solution: SolutionSubmissionRequest, 
                           agent_id: str = Header(...)) -> SolutionSubmissionResponse:
-    """Agent uploads a solution to a problem instance to the platform - the solution will be available for validation 
+    """Agent submits a solution to a problem instance to the platform - the solution will be available for validation 
     by other agents for limited time to determine if the solution is best one on platform or not (agents need to reach 
-    consensus). Returns some metadata about the solution submission."""
+    consensus). Returns some metadata about the solution submission and a soltuion submission id."""
     # Check if agent exists - we require the agent id to be sent in the header
     if not agent_id:
         raise HTTPException(status_code=400, detail="Agent ID not found in request header!")
@@ -282,7 +285,7 @@ async def upload_solution(problem_instance_name: str,
 
 # NOTE: agents could actually check solution submission status multiple times and "claim" the reward even though they don't get any reward it is just for bookkeeping 
 # in this proof of concept so it does not matter)
-@app.get("/solutions/status/{solution_submission_id}", response_model=SolutionSubmissionResponse)
+@app.get("/solutions/submit/status/{solution_submission_id}", response_model=SolutionSubmissionResponse)
 async def get_solution_submission_status(solution_submission_id: str, agent_id: str = Header(...)) -> SolutionSubmissionResponse:
     """Agent requests the status of a solution submission. Returns the status of the solution submission and
     the reward value (if the solution has been validated)."""    
@@ -340,7 +343,7 @@ async def get_solution_submission_status(solution_submission_id: str, agent_id: 
     
 
 @app.get("/solutions/best/download/{problem_instance_name}", response_model=SolutionDataResponse)
-async def download_best_solution(problem_instance_name: str, agent_id: str = Header(...)):
+async def download_best_solution_by_id(problem_instance_name: str, agent_id: str = Header(...)):
     """Agent requests to download the best solution for a specific problem instance. 
     Returns the best solution data if available."""
     # Check if agent exists - we require the agent id to be sent in the header
@@ -398,7 +401,7 @@ async def download_best_solution(problem_instance_name: str, agent_id: str = Hea
 
 
 @app.get("/solutions/validate/download/{problem_instance_name}", response_model=SolutionDataResponse)
-async def download_solution_by_problem_instance_id(problem_instance_name: str, agent_id: str = Header(...)):
+async def download_solution_validate_by_id(problem_instance_name: str, agent_id: str = Header(...)):
     """Agent requests to download a solution to a specific problem instance (to validate it).
     Returns the oldest active solution submission that has more than 30 seconds left for validation."""
     # Check if agent exists - we require the agent id to be sent in the header
@@ -465,10 +468,10 @@ async def download_solution_by_problem_instance_id(problem_instance_name: str, a
 
 
 @app.post("/solutions/validate/{solution_submission_id}", response_model=SolutionValidationResponse)
-async def validate_solution(solution_submission_id: str, 
+async def validate_solution_submission(solution_submission_id: str, 
                             solution_validation_result: SolutionValidationRequest,
                             agent_id: str = Header(...)) -> SolutionValidationResponse:
-    """Agent sends solution validation result to central node for a specific solution submission. 
+    """Agent sends solution validation result to server node for a specific solution submission. 
     Returns the reward for the agent who validated the solution."""
     # Check if agent exists - we require the agent id to be sent in the header
     if not agent_id:
@@ -540,11 +543,6 @@ async def validate_solution(solution_submission_id: str,
 
     return SolutionValidationResponse(reward=central_node.get_solution_validation_reward())
     
-    
-@app.get("/solutions/validate")
-async def validate_any_solution():
-    """Agent requests to validate any solution available on the platform."""
-    pass
     
 
 if __name__ == "__main__":
