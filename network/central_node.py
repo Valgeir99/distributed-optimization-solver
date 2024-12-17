@@ -14,8 +14,8 @@ from utils.database_utils import create_and_init_database, teardown_database
 from config import CENTRAL_DATA_DIR, DB_PATH, BEST_SOLUTIONS_DIR, ACTIVE_SOLUTIONS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
 
 # Experiment configuration
-THIS_EXPERIMENT_DATA_DIR = None
-LOG_FILE_PATH = None
+THIS_EXPERIMENT_DATA_DIR: str = ""
+LOG_FILE_PATH: str = ""
 
 # Load environment variables from .env file
 load_dotenv()

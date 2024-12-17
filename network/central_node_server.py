@@ -192,7 +192,7 @@ async def get_problem_instance_data_by_id(problem_instance_name: str, agent_id: 
 
 
 @app.get("/problem_instances/status/{problem_instance_name}", response_model=ProblemInstanceStatusResponse)
-def check_problem_instance_status(problem_instance_name: str, agent_id: str = Header(...)) -> bool:
+def check_problem_instance_status(problem_instance_name: str, agent_id: str = Header(...)) -> ProblemInstanceStatusResponse:
     """Agent checks if the problem instance is active. Returns True if the problem instance is active,
     False otherwise."""
     # Check if agent exists - we require the agent id to be sent in the header

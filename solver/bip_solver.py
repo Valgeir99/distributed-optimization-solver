@@ -214,7 +214,7 @@ class BIPSolver:
 
         # Loop until a feasible solution is found within the time limit
         max_contraints_holding = 0
-        elapsed_time = 0
+        elapsed_time = 0.0
         iter = 0
         iter_stuck = 0   # number of iterations with no improvement in number of contraints holding
         RANDOM_RESTART_ITER = 10000
@@ -341,7 +341,7 @@ class BIPSolver:
         return False, solution, -1
     
 
-    def _solution_to_sol_file(self, problem_instance_name: str, file: str, solution: np.array, obj: float):
+    def _solution_to_sol_file(self, problem_instance_name: str, file: str, solution: np.array, obj: float) -> str:
         """
         Writes a solution to a .sol file (we define format as Miplib's format - first line empty, then 
         objective value and then variables values line by line). The objective value line first has "=obj="
@@ -375,7 +375,7 @@ class BIPSolver:
             return solution_data
         
 
-    def solve(self, problem_instance_name: str, best_self_sol_path: str|None, best_platform_obj: float|None, max_solve_time: int) -> Tuple[bool, float]:
+    def solve(self, problem_instance_name: str, best_self_sol_path: str|None, best_platform_obj: float|None, max_solve_time: int) -> Tuple[bool, float|None, str]:
         """
         Solves a binary integer problem. 
         It writes the solution to a .sol file. ... TODO ?
@@ -402,7 +402,7 @@ class BIPSolver:
                 raise ValueError(f"Problem instance '{problem_instance_name}' not found in solver.")
             
             # Solve until we find an improved feasible solution or time runs out
-            elapsed_time = 0
+            elapsed_time = 0.0
             start_time = time.time()
             while elapsed_time < max_solve_time:        
                 # Generate a random feasible solution

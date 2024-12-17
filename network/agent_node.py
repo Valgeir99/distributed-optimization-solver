@@ -18,9 +18,9 @@ CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
 CENTRAL_NODE_PORT = os.getenv("CENTRAL_NODE_PORT")
 
 # Experiment configuration
-EXPERIMENT_DATA_DIR = None
-LOG_FILE_PATH = None
-AGENT_REWARDS_DIR = None
+EXPERIMENT_DATA_DIR: str = ""
+LOG_FILE_PATH: str = ""
+AGENT_REWARDS_DIR: str = ""
 
 # Constants
 MAX_SOLVE_TIME = 300   # maximum time that agents spends finding a feasible solution for a problem instance in seconds TODO: not sure about this!! YES I think we should have this (but not sure about the value)
@@ -122,10 +122,9 @@ class AgentNode:
 
     def _load_experiment_config(self):
         """Load the experiment configuration that central node created from the config file."""
-        global THIS_EXPERIMENT_DATA_DIR, LOG_FILE_PATH, AGENT_REWARDS_DIR
+        global LOG_FILE_PATH, AGENT_REWARDS_DIR
         with open(os.path.join(EXPERIMENT_DIR, "experiment_config.json"), "r") as f:
             config = json.load(f)
-        THIS_EXPERIMENT_DATA_DIR = config["THIS_EXPERIMENT_DATA_DIR"]
         LOG_FILE_PATH = config["LOG_FILE_PATH"]
         AGENT_REWARDS_DIR = config["AGENT_REWARDS_DIR"]
     
@@ -166,7 +165,7 @@ class AgentNode:
         return response.json()["agent_id"]
     
 
-    def download_problem_instance(self) -> str:
+    def download_problem_instance(self) -> str | None:
         """Download a problem instance from the central node from a pool of problem instances 
         offerd by the central node and save it in local storage. Agent uses random selection.
         Returns:
@@ -177,7 +176,7 @@ class AgentNode:
         response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/info", headers=self.headers)
         if response.status_code != 200:
             self.logger.error(f"Failed to fetch pool of problem instances - HTTP Error {response.status_code}: {response.text}")
-            return
+            return None
         problem_instances = response.json()   # list of problem instances
 
         # Select a problem instance from the pool - select random one agent does not have stored yet
@@ -189,7 +188,7 @@ class AgentNode:
         
         if problem_instance_name is None:
             self.logger.warning("No new problem instance available for download.")
-            return
+            return None
        
         # Download the problem instance
         self.download_problem_instance_data_by_name(problem_instance_name)
