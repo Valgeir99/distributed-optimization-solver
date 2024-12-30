@@ -1,9 +1,8 @@
---## Database schema for database on central nodes for distributed optimization solver ##--
+--## Database schema for database on server node for distributed optimization solver ##--
 
 -- Create problem_instances table
 CREATE TABLE problem_instances (
     name TEXT PRIMARY KEY,   -- name of the problem instance is unique (instead of id)
-    client_id TEXT NOT NULL,
     description TEXT,
     file_location TEXT NOT NULL,
     reward_accumulated INTEGER DEFAULT 0,
