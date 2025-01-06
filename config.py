@@ -1,6 +1,4 @@
 import os
-from datetime import datetime
-from dotenv import load_dotenv
 
 # Get the project root directory
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -9,13 +7,13 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SCHEMA_PATH = os.path.join(PROJECT_ROOT, 'database', 'schema.sql')
 DATA_PATH = os.path.join(PROJECT_ROOT, 'database', 'data.sql')
 
-# Temporary data configuration - delete the data before running the program
-AGENT_DATA_DIR = os.path.join(PROJECT_ROOT, 'network', 'agent_data_tmp')
-CENTRAL_DATA_DIR = os.path.join(PROJECT_ROOT, 'network', 'central_data_tmp')
-DB_PATH = os.path.join(CENTRAL_DATA_DIR, 'central_node.db')
-BEST_SOLUTIONS_DIR = os.path.join(CENTRAL_DATA_DIR, 'best_solutions')
-ACTIVE_SOLUTIONS_DIR = os.path.join(CENTRAL_DATA_DIR, 'active_solutions')
-
-# Experiment directory - has subdirectories for each experiment
+# Experiment directory - has subdirectories for each experiment and keeps temporary node data for each experiment and more
 EXPERIMENT_DIR = os.path.join(PROJECT_ROOT, 'experiments')
 EXPERIMENT_DATA_DIR = os.path.join(PROJECT_ROOT, 'experiments', 'experiments_data')
+
+# Central node configuration
+CENTRAL_NODE_HOST = "127.0.0.1"
+CENTRAL_NODE_PORT = 8080
+
+# Network parameters directory
+NETWORK_PARAMS_DIR = os.path.join(PROJECT_ROOT, 'network', 'network.params')

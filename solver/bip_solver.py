@@ -21,8 +21,10 @@ class ProblemDataParsed(TypedDict):
 
 class BIPSolver:
     """
-    Solver for binary integer problems. It offers ...
-    (And more like parser, ...) TODO
+    Solver for binary integer problems.
+    This solver can parse .mps files, generate random feasible solutions, and validate solutions.
+    Problem instance need to be added to the solver, where they are then parsed, before they can be solved or validated.
+    
     Problems are represented on array format:
 
         min c^T * x
@@ -39,8 +41,6 @@ class BIPSolver:
         """Initializes the solver."""
         # Dictionary to store parsed problem data with problem name as key and parsed data as value
         self.problem_data: Dict[str, ProblemDataParsed] = dict()
-
-        # TODO: maybe we want to add class variables for like if we have solved this before and stuff like that
 
 
     @staticmethod
@@ -191,7 +191,7 @@ class BIPSolver:
         del self.problem_data[problem_instance_name]
 
     
-    def _generate_random_bip_solution(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float]:
+    def _generate_random_bip_solution(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
         """
         Generates a random feasible solution for a binary integer problem in some time limit.
         Args:
@@ -202,6 +202,7 @@ class BIPSolver:
                 - feasible: True if a feasible solution is found, False otherwise
                 - solution: solution array
                 - obj: objective value of the solution
+                - iterations: number of iterations
         """
         # Unpack the problem data
         c = self.problem_data[problem_instance_name]["c"]
@@ -224,90 +225,57 @@ class BIPSolver:
             constraints_holding = 0
             iter += 1
             
-            # Iterate over constraints in random order and flip variables that create the biggest violation of each contraint until 
-            # the contraint is satisfied (note that by making one contraint satisfied we might violate another)
-            for i in np.random.permutation(A.shape[0]):   # try iterating over contraints randomly
+            # Iterate over constraints and flip random variables that affect the contraint until the constraint is satisfied 
+            # (note that by making one contraint satisfied we might violate another)
+            for i in np.random.permutation(A.shape[0]):
                 constraint = A[i]
                 lhs = np.dot(solution, constraint)
                 if constraint_types[i] == 'L' and lhs > rhs[i]:
                     while lhs > rhs[i]:
-                        # Select a variable with high contribution to the constraint (can be positive or negative) and set it to 
-                        # 0 if positive and 1 if negative since we want to increase the lhs
-                        idx_positive = np.argmax(constraint * solution)   # we only want variables that are currently 1 and will have negative contribution (increasing the lhs) if set to 0
-                        idx_negative = np.argmin(constraint * (1 - solution))   # we only want variables that are currently 0 and will have negative contribution (increasaing the lhs) if set to 1
-                        # Select which one is higher
-                        a_positive = constraint[idx_positive]
-                        a_negative = constraint[idx_negative]
-                        if abs(a_positive) >= abs(a_negative):
-                            solution[idx_positive] = 0
-                        else:
-                            solution[idx_negative] = 1
+                        candidate_indices = np.where(
+                            ((constraint < 0) & (solution == 0)) | ((constraint > 0) & (solution == 1))
+                        )[0]
+                        idx = np.random.choice(candidate_indices)
+                        solution[idx] = 1 - solution[idx]   # flip the variable
                         lhs = np.dot(solution, constraint)
                 elif constraint_types[i] == 'G' and lhs < rhs[i]:
                     while lhs < rhs[i]:
-                        # Select a variable with high contribution to the constraint (can be positive or negative) and set it to 
-                        # 1 if positive and 0 if negative since we want to decrease the lhs
-                        idx_positive = np.argmax(constraint * (1 - solution))   # we only want variables that are currently 0 and will have positive contribution (increasing the lhs) if set to 1
-                        idx_negative = np.argmin(constraint * solution)   # we only want variables that are currently 1 and will have positive contribution (increasing the lhs) if set to 0
-                        # Select which one is higher
-                        a_positive = constraint[idx_positive]
-                        a_negative = constraint[idx_negative]
-                        if abs(a_positive) >= abs(a_negative):   # TODO: maybe if equal then select randomly
-                            solution[idx_positive] = 1
-                        else:
-                            solution[idx_negative] = 0
+                        candidate_indices = np.where(
+                            ((constraint > 0) & (solution == 0)) | ((constraint < 0) & (solution == 1))
+                        )[0]
+                        idx = np.random.choice(candidate_indices)
+                        solution[idx] = 1 - solution[idx]
                         lhs = np.dot(solution, constraint)
                 elif constraint_types[i] == 'E' and lhs != rhs[i]:
                     while lhs != rhs[i]:
+                        # Flip based on if the lhs is greater or less than rhs
                         if lhs > rhs[i]:
-                            # Select a variable with high contribution to the constraint (can be positive or negative) and set it to
-                            # 0 if positive and 1 if negative since we want to decrease the lhs
-                            idx_positive = np.argmax(constraint * solution)   # we only want variables that are currently 1 and will have negative contribution (increasing the lhs) if set to 0
-                            idx_negative = np.argmin(constraint * (1 - solution))   # we only want variables that are currently 0 and will have negative contribution (increasaing the lhs) if set to 1
-                            # Select which one is higher
-                            a_positive = constraint[idx_positive]
-                            a_negative = constraint[idx_negative]
-                            if abs(a_positive) >= abs(a_negative):
-                                solution[idx_positive] = 0
-                            else:
-                                solution[idx_negative] = 1
+                            candidate_indices = np.where(
+                                ((constraint < 0) & (solution == 0)) | ((constraint > 0) & (solution == 1))
+                            )[0]
+                            idx = np.random.choice(candidate_indices)
+                            solution[idx] = 1 - solution[idx]
                             lhs = np.dot(solution, constraint)
                         elif lhs < rhs[i]:
-                            # Select a variable with high contribution to the constraint (can be positive or negative) and set it to
-                            # 1 if positive and 0 if negative since we want to increase the lhs
-                            idx_positive = np.argmax(constraint * (1 - solution))   # we only want variables that are currently 0 and will have positive contribution (increasing the lhs) if set to 1
-                            idx_negative = np.argmin(constraint * solution)   # we only want variables that are currently 1 and will have positive contribution (increasing the lhs) if set to 0
-                            # Select which one is higher
-                            a_positive = constraint[idx_positive]
-                            a_negative = constraint[idx_negative]
-                            if abs(a_positive) >= abs(a_negative):
-                                solution[idx_positive] = 1
-                            else:
-                                solution[idx_negative] = 0
+                            candidate_indices = np.where(
+                                ((constraint > 0) & (solution == 0)) | ((constraint < 0) & (solution == 1))
+                            )[0]
+                            idx = np.random.choice(candidate_indices)
+                            solution[idx] = 1 - solution[idx]
                             lhs = np.dot(solution, constraint)
-
                            
-            # Flip one variable that is breaking a random constraint (and check feasibility)
+            # Check feasibility
             feasible = True
             for i in np.random.permutation(A.shape[0]):
                 constraint = A[i]
                 lhs = np.dot(solution, constraint)
                 if constraint_types[i] == 'L' and lhs > rhs[i]:
-                    # Flip a random variable contributing to violation
-                    idx = np.random.choice(np.where(constraint != 0)[0])
-                    solution[idx] = 1 - solution[idx]
                     feasible = False
                     break
                 elif constraint_types[i] == 'G' and lhs < rhs[i]:
-                    # Flip a random variable contributing to violation
-                    idx = np.random.choice(np.where(constraint != 0)[0])
-                    solution[idx] = 1 - solution[idx]
                     feasible = False
                     break
                 elif constraint_types[i] == 'E' and lhs != rhs[i]:
-                    # Flip a random variable contributing to violation
-                    idx = np.random.choice(np.where(constraint != 0)[0])
-                    solution[idx] = 1 - solution[idx]
                     feasible = False
                     break
                 constraints_holding += 1
@@ -317,10 +285,8 @@ class BIPSolver:
                 max_contraints_holding = constraints_holding
 
             if feasible:
-                #print("feasible solution found!!!!")
-                #print("number of iterations:", iter)
                 obj = np.dot(c, solution)
-                return True, solution, obj
+                return True, solution, obj, iter
             
             if constraints_holding_prev_iter <= constraints_holding:
                 iter_stuck += 1
@@ -330,15 +296,39 @@ class BIPSolver:
                 solution = np.random.randint(0, 2, len(c))
                 iter_stuck = 0
             
-            elapsed_time += time.time()-start_time
+            elapsed_time = time.time()-start_time
             constraints_holding_prev_iter = constraints_holding
 
-        #print("feasible solution not found")
-        #print("max number of constraints holding:", max_contraints_holding)
-        #print("number of iterations:", iter)
+        return False, solution, -1, iter
+    
 
+    def _generate_random_bip_solution_simple(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
+        ### Just generate a completely random solution in some time limit ###
 
-        return False, solution, -1
+        # Unpack the problem data
+        c = self.problem_data[problem_instance_name]["c"]
+        A = self.problem_data[problem_instance_name]["A"]
+        rhs = self.problem_data[problem_instance_name]["rhs"]
+        constraint_types = self.problem_data[problem_instance_name]["constraint_types"]
+
+        elapsed_time = 0.0
+        start_time = time.time()
+        iter = 0
+        while elapsed_time < max_time:
+            # Random solution
+            solution = np.random.randint(0, 2, len(c))
+            # Check feasibility
+            feasible = self._check_feasibility(solution, A, rhs, constraint_types)
+
+            if feasible:
+                # Calculate the objective value
+                objective = np.dot(c, solution)
+                return feasible, solution, objective
+            
+            elapsed_time = time.time() - start_time
+            iter += 1
+
+        return False, solution, -1, iter
     
 
     def _solution_to_sol_file(self, problem_instance_name: str, file: str, solution: np.array, obj: float) -> str:
@@ -375,16 +365,17 @@ class BIPSolver:
             return solution_data
         
 
-    def solve(self, problem_instance_name: str, best_self_sol_path: str|None, best_platform_obj: float|None, max_solve_time: int) -> Tuple[bool, float|None, str]:
+    def solve(self, problem_instance_name: str, best_self_sol_path: str|None, best_obj: float|None, max_solve_time: int) -> Tuple[bool, float|None, str]:
         """
-        Solves a binary integer problem. 
-        It writes the solution to a .sol file. ... TODO ?
-        
+        Solves a binary integer problem that has been added to the solver. The solver generates a random feasible solution 
+        and tries to find an improved feasible solution within a time limit. If an improved feasible solution is found,
+        it writes the solution to a .sol file and returns that is was found, otherwise it returns that no solution was found.
+
         Args:
             problem_instance_name: name of the problem instance
             best_self_sol_path: path to the .sol file where the best solution found by the solver will be written
-            best_platform_obj: objective value of the best solution on the platform
-            max_solve_time: maximum time to solve the problem in seconds
+            best_obj: objective value of the best solution on the platform or best solution found by the agent itself, whichever is better
+            max_solve_time: maximum time to solve (improve the solution) the problem in seconds
         Returns:
             tuple:
                 - found: True if an improved feasible solution is found, False otherwise
@@ -404,18 +395,22 @@ class BIPSolver:
             # Solve until we find an improved feasible solution or time runs out
             elapsed_time = 0.0
             start_time = time.time()
-            while elapsed_time < max_solve_time:        
+            max_solve_time_func = max_solve_time
+            iterations = 0
+            while elapsed_time < max_solve_time:
                 # Generate a random feasible solution
-                feasible, solution, obj = self._generate_random_bip_solution(problem_instance_name, max_solve_time)
+                feasible, solution, obj, iters = self._generate_random_bip_solution(problem_instance_name, max_solve_time_func)
+                iterations += iters
                 if feasible:
-                    if best_platform_obj is None or obj < best_platform_obj:
+                    if best_obj is None or obj < best_obj:
                         found = True
                         # Write the solution to a .sol file
                         solution_data = self._solution_to_sol_file(problem_instance_name, best_self_sol_path, solution, obj)
                         break
-                elapsed_time += time.time() - start_time
+                elapsed_time = time.time() - start_time
+                max_solve_time_func = max_solve_time - elapsed_time
                     
-            return found, obj, solution_data
+            return found, obj, solution_data, iterations
         
         except Exception as e:
             # General error handling to propagate to the calling function

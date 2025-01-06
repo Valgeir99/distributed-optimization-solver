@@ -59,6 +59,7 @@ class ProblemInstanceStatusResponse(BaseModel):
 
 class SolutionSubmissionRequest(BaseModel):
     solution_data: str
+    objective_value: float
 
 class SolutionSubmissionResponse(BaseModel):
     solution_submission_id: str
@@ -259,7 +260,7 @@ async def submit_solution(problem_instance_name: str,
     # Start the solution validation phase (on different thread) for this solution submission
     solution_submission_id = central_node.generate_solution_submission_id()
     try:
-        central_node.start_solution_validation_phase(problem_instance_name, solution_submission_id, agent_id, solution.solution_data)
+        central_node.start_solution_validation_phase(problem_instance_name, solution_submission_id, agent_id, solution.solution_data, solution.objective_value)
     except Exception as e:
         raise HTTPException(status_code=500, detail="Could not start solution validation phase. Please try again later.")
 
@@ -318,7 +319,7 @@ async def get_solution_submission_status(solution_submission_id: str, agent_id: 
         raise HTTPException(status_code=400, detail="Agent does not own this solution submission!")
 
     # Check if solution submission is active
-    if solution_submission["accepted"] is None:
+    if solution_submission["active"]:
         # Solution submission is still being validated
         return SolutionSubmissionResponse(
             solution_submission_id=solution_submission_id, 
@@ -446,7 +447,7 @@ async def download_solution_validate_by_id(problem_instance_name: str, agent_id:
     if result is None:
         # Database error
         raise HTTPException(status_code=500, detail="Database error")
-    if not result:
+    if not result or not result[0].get("sol_file_path"):
         # Solution submission not found
         raise HTTPException(status_code=404, detail="Solution submission not found!")
     solution_file_path = result[0]["sol_file_path"]
@@ -497,7 +498,7 @@ async def validate_solution_submission(solution_submission_id: str,
     solution_submission = result[0]
 
     # Check if solution submission has already been validated
-    if solution_submission["accepted"] is not None:
+    if not solution_submission["active"]:
         # Solution submission is already validated
         raise HTTPException(status_code=400, detail="Solution submission has already been validated by the platform!")
     

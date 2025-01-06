@@ -1,0 +1,12 @@
+## Central node params ##
+SOLUTION_VALIDATION_DURATION=300    # seconds
+SUCCESSFUL_SOLUTION_SUBMISSION_REWARD=100
+SOLUTION_VALIDATION_REWARD=1
+SOLUTION_VALIDATION_CONSENUS_RATIO=0.5   # 0.5 means that 50% of the nodes on the platform should agree on the solution
+RANDOM_PROBLEM_INSTANCE_POOL_SIZE=10   # number of problems offered by central node when downloading any problem on the platform
+
+## Agent node params ##
+# Maximum time spent solving until going back to the agent "event" loop to do other task like 
+# validate (we want this to be less than SOLUTION_VALIDATION_DURATION so agents will not miss out on 
+# validation since they are stuck solving)
+MAX_SOLVE_TIME=240

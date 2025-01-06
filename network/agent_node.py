@@ -8,25 +8,18 @@ import logging
 import csv
 import json
 from dotenv import load_dotenv
-from config import AGENT_DATA_DIR, EXPERIMENT_DIR
+from config import CENTRAL_NODE_HOST, CENTRAL_NODE_PORT, EXPERIMENT_DIR
 
 from solver.bip_solver import BIPSolver
 
-# Load environment variables from .env file
-load_dotenv()
-CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
-CENTRAL_NODE_PORT = os.getenv("CENTRAL_NODE_PORT")
-
 # Experiment configuration
-EXPERIMENT_DATA_DIR: str = ""
 LOG_FILE_PATH: str = ""
-AGENT_REWARDS_DIR: str = ""
+THIS_EXPERIMENT_DIR: str = ""
+AGENT_DATA_DIR: str = ""
 
-# Constants
-MAX_SOLVE_TIME = 300   # maximum time that agents spends finding a feasible solution for a problem instance in seconds TODO: not sure about this!! YES I think we should have this (but not sure about the value)
-# One good thing about this is that we are using a random solver which means that in most cases the solver won't give a better solution than the best solution on the platform
-# so instead of calling the agent solve function multiple times (with the overhead of for example doqnloading the best solution from the central node) we can just set a max solve time
-# and if the solver does not find a better solution in that time we can just stop the solver and move on. I think we should inclue yes
+# Agent configuration
+load_dotenv()
+MAX_SOLVE_TIME = int(os.getenv("MAX_SOLVE_TIME"))   # maximum time that agents spends finding a feasible solution for a problem instance in seconds
 
 
 class ProblemInstanceInfo(TypedDict):
@@ -64,7 +57,7 @@ class AgentNode:
     # TODO: fix
     """An agent node that knows endpoints of central node web server and can communicate through there. 
     In the optimization solver platform this proof of concept is built from, the agent node is 
-    anonomous and should be implemented however the owner of the node wants, the owner just needs 
+    autonomous and should be implemented however the owner of the node wants, the owner just needs 
     to follow the message protocol for the platform in order to be able to build his agent node. 
     However, in this proof of concept all agent nodes are the same and behave as described in this class.
     The agent node is only solving a single problem instance at a time, but can store multiple
@@ -118,16 +111,18 @@ class AgentNode:
 
         # Solver
         self.solver = BIPSolver()
+        self.solve_iterations = 0   # number of times agent did a solve iteration (try to see if performance scales with number of agents on the platform)
 
 
     def _load_experiment_config(self):
         """Load the experiment configuration that central node created from the config file."""
-        global LOG_FILE_PATH, AGENT_REWARDS_DIR
+        global THIS_EXPERIMENT_DIR, LOG_FILE_PATH, AGENT_DATA_DIR
         with open(os.path.join(EXPERIMENT_DIR, "experiment_config.json"), "r") as f:
             config = json.load(f)
+        THIS_EXPERIMENT_DIR = config["THIS_EXPERIMENT_DATA_DIR"]
         LOG_FILE_PATH = config["LOG_FILE_PATH"]
-        AGENT_REWARDS_DIR = config["AGENT_REWARDS_DIR"]
-    
+        AGENT_DATA_DIR = config["AGENT_DATA_DIR"]
+
 
     def _setup_logger(self) -> logging.Logger:
         """Set up the logger for the agent node."""
@@ -159,7 +154,7 @@ class AgentNode:
         Raises:
             Exception: If the agent node fails to get an id from the central node
         """
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/register")
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/register", timeout=30.0)
         if response.status_code != 200:
             raise Exception(f"Agent node cannot start - Failed to get id from central node - HTTP Error {response.status_code}: {response.text}")
         return response.json()["agent_id"]
@@ -173,7 +168,7 @@ class AgentNode:
         """
         self.logger.info("Request to download any problem instance...")
         # Get pool of problem instances
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/info", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/info", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to fetch pool of problem instances - HTTP Error {response.status_code}: {response.text}")
             return None
@@ -206,7 +201,7 @@ class AgentNode:
             problem_instance_name: The name of the problem instance that was downloaded | None if the problem instance was not downloaded
         """
         self.logger.info(f"Request to downloaod problem instance {problem_instance_name}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to download problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -285,7 +280,7 @@ class AgentNode:
             problem_instance_name: The name of the problem instance to check status for
         """
         self.logger.info(f"Request to check status of problem instance {problem_instance_name}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/status/{problem_instance_name}", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/status/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to check status of problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -301,7 +296,7 @@ class AgentNode:
                 self.logger.error(f"Error when removing problem instance from solver: {e}")
                 return
         self.problem_instances[problem_instance_name]["active"] = active
-        self.logger.info(f"Problem instance {problem_instance_name} status updated successfully - active={active}")   # TODO: maybe exessive logging so maybe only log if status changed
+        self.logger.info(f"Problem instance {problem_instance_name} status updated successfully - active={active}")
                 
 
     def download_best_solution(self, problem_instance_name: str):
@@ -313,7 +308,7 @@ class AgentNode:
             self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
             return
         
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/best/download/{problem_instance_name}", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/best/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to download best solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -341,13 +336,14 @@ class AgentNode:
         self.logger.info(f"Best solution for problem instance {problem_instance_name} downloaded successfully with objective value {best_obj}")
 
 
-    def submit_solution(self, problem_instance_name: str, solution_data: str):
+    def submit_solution(self, problem_instance_name: str, solution_data: str, objective_value: float):
         """Submit a solution to the central node get solution submission id in response
         so that agent can track the status of the solution submission."""
         self.logger.info(f"Request to submit solution for problem instance {problem_instance_name}...")
         response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/{problem_instance_name}", 
-                              json={"solution_data": solution_data},
-                              headers=self.headers)
+                              json={"solution_data": solution_data, "objective_value": objective_value},
+                              headers=self.headers,
+                              timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to submit solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -361,7 +357,7 @@ class AgentNode:
         Once the solution submission is validated, the agent will update the reward he has accumulated for this problem 
         instance and remove the solution submission from active solution submissions."""
         self.logger.info(f"Request to check status of solution submission {solution_submission_id}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/status/{solution_submission_id}", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/status/{solution_submission_id}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to check status of solution submission {solution_submission_id} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -379,36 +375,31 @@ class AgentNode:
                 self.logger.info(f"Agent has now collected solution submission reward ({solution_submission_info["reward"]} coins) for {solution_submission_id} and it has been removed from agent's active solution submissions")
 
 
-    def validation_any_solution_request(self):
-        """Request a solution to validate from the central node."""
-        # TODO: maybe we want to allow this also but lets start with agent knowing the problem instance name before 
-        # validating the solution
-        pass
-
-
-    def validate_solution_request(self, problem_instance_name: str):
+    def validate_solution_request(self, problem_instance_name: str) -> bool:
         """Validate a solution with the central node. The agent must have the problem instance stored in order to validate the solution.
         The agent will download the solution from the central node (get request), validate it and send result to central node (post request).
         Args:
             problem_instance_name: The name of the problem instance that the solution belongs to
+        Returns:
+            True if the solution was validated successfully, False otherwise
         """
         self.logger.info(f"Request to validate a solution for problem instance {problem_instance_name}...")
         # Check if agent has the problem instance stored
         if not problem_instance_name in self.problem_instances_ids:
             self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
-            return
+            return False
         
         # Check if the problem instance is still active on the platform - since validating is not so expensive we will NOT update the status but only check in memory data
         if not self.problem_instances[problem_instance_name]["active"]:
             self.logger.error(f"Problem instance {problem_instance_name} is no longer active on the platform")
-            return
+            return False
         
         # Send request to central node to validate the solution - get sent solution back from central node
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/download/{problem_instance_name}", headers=self.headers)
+        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to validate a solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
-            # If no solution to validate then the agent 
-            return
+            # If no solution to validate then the agent cannot validate
+            return False
         solution = response.json()
 
         # Validate the solution and calculate the objective value - first download best solution from central node (this is agent implementation decision)
@@ -422,16 +413,19 @@ class AgentNode:
         self.logger.info(f"Requesting to submit validation result to central node for solution submission {solution_submission_id}...")
         response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/{solution_submission_id}", 
                               json={"response": validation_result, "objective_value": objective_value},
-                              headers=self.headers)
+                              headers=self.headers,
+                              timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to submit validation result for solution submission {solution_submission_id} - HTTP Error {response.status_code}: {response.text}")
-            return
+            return False
         solution_response = response.json()
         
         # Update the reward he has accumulated for this problem instance
         self.problem_instances[problem_instance_name]["reward_accumulated"] += solution_response["reward"]
 
         self.logger.info(f"Solution submission {solution_submission_id} for problem instance {problem_instance_name} validated successfully and agent collected reward ({solution_response["reward"]} coins).")
+
+        return True
 
 
 
@@ -466,7 +460,7 @@ class AgentNode:
             return valid, obj_value
         except Exception as e:
             self.logger.error(f"Error when validating solution: {e}")
-            return False, -1        
+            return False, 8888888888       
 
         
     def solve_problem_instance(self, problem_instance_name: str):
@@ -496,21 +490,23 @@ class AgentNode:
         # Get the best solution from the central node so that we don't submit a solution that is worse than the best solution on the platform
         self.download_best_solution(problem_instance_name)
 
-        # Generate a better solution than the best one on the platform using the solver
+        # Generate a better solution than the best one on the platform / best one found by the agent using the solver
         try:
-            sol_found, obj, solution_data = self.solver.solve(problem_instance_name, self.problem_instances[problem_instance_name]["best_self_sol_path"], 
-                                                              self.problem_instances[problem_instance_name]["best_platform_obj"], max_solve_time=MAX_SOLVE_TIME)   # TODO: what to do with max solve time?
+            obj_best = min((self.problem_instances[problem_instance_name]["best_platform_obj"], self.problem_instances[problem_instance_name]["best_self_obj"]), key=lambda x: (x is None, x))
+            sol_found, obj, solution_data, iterations = self.solver.solve(problem_instance_name, self.problem_instances[problem_instance_name]["best_self_sol_path"], 
+                                                              obj_best, max_solve_time=MAX_SOLVE_TIME)
+            self.solve_iterations += iterations
             if sol_found:
                 self.logger.info(f"Found a improved solution found for problem instance {problem_instance_name} with objective value {obj}")
                 # Submit the solution to the central node
-                self.submit_solution(problem_instance_name, solution_data)
+                self.submit_solution(problem_instance_name, solution_data, obj)
                 # Update the agent's best solution found by itself (already written to local storage in solve() function above)
                 self.problem_instances[problem_instance_name]["best_self_obj"] = obj
             else:
                 self.logger.info(f"Did not find a improved solution for problem instance {problem_instance_name}")
 
         except Exception as e:
-            self.logger.error(f"Error when solving problem instance {problem_instance_name}: {e}")    
+            self.logger.error(f"Error when solving problem instance {problem_instance_name}: {e}")
         
         # After solving is done, set the solving problem instance to None
         self.solving_problem_instance_name = None
@@ -549,17 +545,32 @@ class AgentNode:
         # Delete the agent data folder
         shutil.rmtree(self.agent_data_path, onexc=AgentNode._remove_readonly)
 
-        # Save the reward accumulated by the agent to a file
-        with open(f"{AGENT_REWARDS_DIR}/agent_{self.id}_rewards.csv", "w", newline="") as file:
-            writer = csv.writer(file)
-            for problem_instance_name in self.problem_instances_ids:
-                writer.writerow([problem_instance_name, self.problem_instances[problem_instance_name]["reward_accumulated"]])
+        # Save the reward accumulated by the agent to a file (shared file for all agents)
+        import fcntl
+        with open(os.path.join(THIS_EXPERIMENT_DIR, "rewards.csv"), "a", newline="") as file:
+            fcntl.flock(file, fcntl.LOCK_EX)
+            try:
+                writer = csv.writer(file)
+                for problem_instance_name in self.problem_instances_ids:
+                    writer.writerow([self.id, problem_instance_name, self.problem_instances[problem_instance_name]["reward_accumulated"]])
+            finally:
+                fcntl.flock(file, fcntl.LOCK_UN)
+
+        # Save the number of solve iterations to a file (shared file for all agents)
+        with open(os.path.join(THIS_EXPERIMENT_DIR, "solve_iterations.csv"), "a", newline="") as file:
+            fcntl.flock(file, fcntl.LOCK_EX)
+            try:
+                writer = csv.writer(file)
+                writer.writerow([self.id, self.solve_iterations])
+            finally:
+                fcntl.flock(file, fcntl.LOCK_UN)
 
         # Log some agent information
         msg = ""
         for problem_instance_name in self.problem_instances_ids:
             msg += f"For problem instance {problem_instance_name}:\n - Best solution found by agent: {self.problem_instances[problem_instance_name]['best_self_obj']} \
-            \n - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']} \n"
+            \n - Reward accumulated: {self.problem_instances[problem_instance_name]['reward_accumulated']} \
+            \n - Number of solve iterations: {self.solve_iterations}\n"
 
         self.logger.info(msg)
         self.logger.info(f"Agent node cleaned up")

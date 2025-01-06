@@ -9,26 +9,23 @@ from datetime import datetime, timedelta
 import uuid
 import logging
 import json
+import traceback
+from threading import local
 
-from utils.database_utils import create_and_init_database, teardown_database
-from config import CENTRAL_DATA_DIR, DB_PATH, BEST_SOLUTIONS_DIR, ACTIVE_SOLUTIONS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
+from database.database_utils import create_and_init_database, teardown_database
+from config import CENTRAL_NODE_HOST, CENTRAL_NODE_PORT, NETWORK_PARAMS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
 
 # Experiment configuration
 THIS_EXPERIMENT_DATA_DIR: str = ""
 LOG_FILE_PATH: str = ""
 
-# Load environment variables from .env file
-load_dotenv()
-CENTRAL_NODE_HOST = os.getenv("CENTRAL_NODE_HOST")
-CENTRAL_NODE_PORT = int(os.getenv("CENTRAL_NODE_PORT"))
+# Central node configuration
+load_dotenv(dotenv_path=NETWORK_PARAMS_DIR)
 SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))  # seconds
+SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of positive validations needed to accept a solution out of all agents registered (e.g. majority)
 SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCESSFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
 SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
-SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of positive validations needed to accept a solution out of all agents registered (e.g. majority)
-
-# Other constants
-RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose from when selecting a problem instance for an agent
-
+RANDOM_PROBLEM_INSTANCE_POOL_SIZE =  int(os.getenv("RANDOM_PROBLEM_INSTANCE_POOL_SIZE"))   # number of problem instances to choose from when selecting a problem instance for an agent
 
 # Some design NOTE: 
 # - The central node is designed so that there can only be one instance of the central node running at a time (singleton pattern).
@@ -50,7 +47,7 @@ RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose
 #   from (could include problem instances agent already has downloaded).
 # - Central node gives a solution to an agent when asking for a solution to validate. Central node gives the agent the oldest active
 #   solution submission that the agent did not submit by himself and that the agent has not validated before. The central node will 
-#   only give a solution submission that has at least 30 seconds left for validation. (TODO: or give random instead of oldest active? ask what Joe thinks)
+#   only give a solution submission that has at least 15 seconds left for validation.
 # - SOLUTION_VALIDATION_CONSENUS_RATIO is the ratio of positive validations needed to accept a solution out of all agents registered. So the ratio is 0.5 
 #   if we want majority of all agents on the platform to accept the solution. This means that if there are > 50% malicious agents on the platform then 
 #   no solutions will be accepted. NOTE: for proof of concept we assume that all agents are active so we don't need to consider inactive agents in 
@@ -72,9 +69,8 @@ RANDOM_PROBLEM_INSTANCE_POOL_SIZE = 10   # number of problem instances to choose
 
 ##--- CentralNode class ---##
 class CentralNode:
-    """A central node that has a web server to comminicate with agent nodes and stores data in a local database.
-
-    TODO: add more description about the central node and its role in the platform."""
+    """A central node that has a web server (in central_node_server.py) to comminicate with agent nodes and stores data in a local database.
+    It's main purpose is to manage the platform and the solution validation phase for solution submissions from agents."""
 
     _instance = None
 
@@ -104,23 +100,26 @@ class CentralNode:
         self.web_server = web_server
 
         # Setup folders for all temporary data during each run of the central node/platform
+        CENTRAL_DATA_DIR = os.path.join(THIS_EXPERIMENT_DATA_DIR, "central_data_tmp")
         if os.path.exists(CENTRAL_DATA_DIR):
             shutil.rmtree(CENTRAL_DATA_DIR, onexc=CentralNode._remove_readonly)
         os.makedirs(CENTRAL_DATA_DIR, exist_ok=False)
         # Folder to store best soluttions on the platform
-        self.best_solutions_dir = BEST_SOLUTIONS_DIR
+        self.best_solutions_dir = os.path.join(CENTRAL_DATA_DIR, "best_solutions")
         if os.path.exists(self.best_solutions_dir):
             shutil.rmtree(self.best_solutions_dir, onexc=CentralNode._remove_readonly)
         os.makedirs(self.best_solutions_dir, exist_ok=False)
         # Folder to store solution data of active solution submissions
-        self.active_solutions_dir = ACTIVE_SOLUTIONS_DIR
+        self.active_solutions_dir = os.path.join(CENTRAL_DATA_DIR, "active_solutions")
         if os.path.exists(self.active_solutions_dir):
             shutil.rmtree(self.active_solutions_dir, onexc=CentralNode._remove_readonly)
         os.makedirs(self.active_solutions_dir, exist_ok=False)
-        # Database
-        self.db_path = DB_PATH
+
+        # Database - create database manager object to manage database connections for multiple threads
+        self.db_path = os.path.join(CENTRAL_DATA_DIR, "central_node.db")
         create_and_init_database(self.db_path)
-        self.db_connection = self.__connect_to_database()
+        self.db_manager = DatabaseManager(self.db_path, self.logger)
+        self.db_manager.get_connection(threading.get_ident())   # get a connection for the main thread
 
         # Number of agents registered to the platform
         self.agent_counter = 0
@@ -128,7 +127,11 @@ class CentralNode:
 
     def __setup_experiment(self):
         """Setup the experiment configuration for central node and agents. Creates the directory for the experiment 
-        data and log file. Saves the paths to a shared json file for agents to access."""
+        data (and temporary data) and log file. Saves the paths to a shared json file for agents to access.
+        Returns:
+            str: The path to the experiment data directory.
+
+        """
         global THIS_EXPERIMENT_DATA_DIR, LOG_FILE_PATH
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -136,18 +139,20 @@ class CentralNode:
         THIS_EXPERIMENT_DATA_DIR = os.path.join(EXPERIMENT_DATA_DIR, f'experiment_{timestamp}')
         os.makedirs(THIS_EXPERIMENT_DATA_DIR, exist_ok=False)   # fail if directory already exists
 
-        # Create a directory for storing agent rewards - this is folder agents will upload their rewards to after the experiment
-        agent_rewards_dir = os.path.join(THIS_EXPERIMENT_DATA_DIR, 'agent_rewards')
-        os.makedirs(agent_rewards_dir, exist_ok=False)
-        
+        # Agent data temporary directory for each experiment
+        AGENT_DATA_DIR = os.path.join(THIS_EXPERIMENT_DATA_DIR, 'agent_data_tmp')
+        os.makedirs(AGENT_DATA_DIR, exist_ok=False)
+
+        # Copy network parameter file to the experiment folder
+        shutil.copy(NETWORK_PARAMS_DIR, THIS_EXPERIMENT_DATA_DIR)
+
         # Create a new log file for this run - this is where all logs will be stored (also logs from agents)
         LOG_FILE_PATH = os.path.join(THIS_EXPERIMENT_DATA_DIR, f'log_{timestamp}.log')
         open(LOG_FILE_PATH, 'w').close()
 
-        # Save paths to a shared json file for agent nodes to access
         shared_config = {
             "THIS_EXPERIMENT_DATA_DIR": THIS_EXPERIMENT_DATA_DIR,
-            "AGENT_REWARDS_DIR": agent_rewards_dir,
+            "AGENT_DATA_DIR": AGENT_DATA_DIR,
             "LOG_FILE_PATH": LOG_FILE_PATH,
         }
         with open(os.path.join(EXPERIMENT_DIR, 'experiment_config.json'), 'w') as f:
@@ -174,58 +179,17 @@ class CentralNode:
         return logger
 
 
-    def __connect_to_database(self):
-        """Create a connection to the database."""
-        try:
-            connection = sqlite3.connect(self.db_path, check_same_thread=False)   # check_same_thread=False is needed for multithreading
-            self.logger.info(f"Connected to database at {self.db_path}")
-            return connection
-        except sqlite3.Error as e:
-            # Raise exception to stop the program (we can't continue without the database)
-            self.logger.error(f"Error while connecting to database at {self.db_path}: {e}")
-            raise sqlite3.Error(f"Error while connecting to database at {self.db_path}: {e}")
-
-
-    def __disconnect_from_database(self):
-        """Close the connection to the database."""
-        try:
-            self.db_connection.close()
-            self.logger.info(f"Disconnected from database at {self.db_path}")
-        except sqlite3.Error as e:
-            self.logger.error(f"Error while disconnecting from database at {self.db_path}: {e}")
-
-
     def query_db(self, query: str, params: tuple=()) -> list[dict] | None:
         """Query the database and return the result.
         Returns: 
             list: The result of the query or None if an error occurred."""
-        try:
-            cursor = self.db_connection.cursor()
-            cursor.execute(query, params)
-            result = cursor.fetchall()
-            # Return a list of dictionaries with the column names as keys
-            columns = [description[0] for description in cursor.description]
-            result_dict = [dict(zip(columns, row)) for row in result]
-            cursor.close()
-            return result_dict
-        except sqlite3.Error as e:
-            self.logger.error(f"Error while querying database at {self.db_path}: {e}")
-            return None
+        return self.db_manager.execute_query(query, params)
         # NOTE: remember we need to check if the result is None when we call this function!!
 
 
     def edit_data_in_db(self, query: str, params: tuple=(), commit: bool=True):
         """Insert/Delete data in the database."""
-        try:
-            cursor = self.db_connection.cursor()
-            cursor.execute(query, params)
-            if commit:
-                self.db_connection.commit()
-            cursor.close()
-        except sqlite3.Error as e:
-            self.db_connection.rollback()
-            self.logger.error(f"Error while editing data in database at {self.db_path}: {e}")
-            raise sqlite3.Error(f"Error while editing data in database at {self.db_path}: {e}")
+        self.db_manager.execute_write(query, params, commit)
        
 
     def __save_db(self):
@@ -270,7 +234,7 @@ class CentralNode:
         return str(uuid.uuid4())
 
 
-    def start_solution_validation_phase(self, problem_instance_name: str, solution_submission_id: str, agent_id: str, solution_data: str):
+    def start_solution_validation_phase(self, problem_instance_name: str, solution_submission_id: str, agent_id: str, solution_data: str, objective_value: float):
         """Start the solution validation phase with a time limit for a solution submission.
         
         Args:
@@ -302,14 +266,21 @@ class CentralNode:
         except Exception as e:
             self.logger.error(f"Error while saving tmp solution data to file {sol_file_path} - Solution validation phase aborted: {e}")
             raise Exception(f"Error while saving solution data to file {sol_file_path} - Solution validation phase aborted: {e}")
-            
+        
+        def validation_thread_function():
+            try:
+                self.db_manager.get_connection(threading.get_ident(), solution_submission_id)
+                self._manage_validation_phase(problem_instance_name, solution_submission_id, validation_end_time, objective_value)
+            finally:
+                self.db_manager.close_connection(threading.get_ident(), solution_submission_id)
+        
         # Start a background thread for this solution submission validation - we use daemon threads so that this thread does not continue to run after the main thread (central node server) has finished
-        validation_thread = threading.Thread(target=self._manage_validation_phase, args=(problem_instance_name, solution_submission_id, validation_end_time), daemon=True)
+        validation_thread = threading.Thread(target=validation_thread_function, daemon=True)
         validation_thread.start()
         self.logger.info(f"Started validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
 
-    def _manage_validation_phase(self, problem_instance_name: str, solution_submission_id: str, validation_end_time: datetime):
+    def _manage_validation_phase(self, problem_instance_name: str, solution_submission_id: str, validation_end_time: datetime, objective_value: float):
         """Manage the ongoing validation phase and end it after the time limit or if problem instance goes over budget."""
         while datetime.now() < validation_end_time:
             # The thread waits until the validation period expires - sleep for reasonable time since we are querying the database in the loop
@@ -324,36 +295,39 @@ class CentralNode:
             if not results:
                 self.logger.error(f"Problem instance {problem_instance_name} not found in database - SHOULD NOT HAPPEN")
                 continue
-            reward_accumulated = results[0]["reward_accumulated"]
-            reward_budget = results[0]["reward_budget"] 
-            # Get current reward accumulated for all solution submissions for this problem instance
-            results = self.query_db("SELECT SUM(reward) AS active_reward FROM active_solutions_submissions_validations WHERE problem_instance_name = ?", (problem_instance_name,))
-            if results is None:
-                self.logger.error(f"Error while querying database for active solution submissions for problem instance {problem_instance_name}")
-                continue
-            if not results:
-                # No active solution submissions for this problem instance - continue to next iteration of the loop
-                continue
-            active_reward = results[0]["active_reward"] or 0
-            # Compare accumulated reward for this problem instance with the budget
-            if reward_accumulated + active_reward >= reward_budget:
-                try:
-                    self.edit_data_in_db("UPDATE problem_instances SET active = False,  WHERE name = ?", (problem_instance_name,))
-                except sqlite3.Error as e:
-                    # On error we just log the error and continue to next iteration of the loop - we will try again next time
-                    self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in validation phase loop: {e}")
+            #reward_accumulated = results[0]["reward_accumulated"] or 0
+            reward_accumulated =  results[0].get("reward_accumulated", 0)   # NOTE: got weird key error here sometimes (should not happen)
+            #reward_budget = results[0]["reward_budget"] 
+            reward_budget = results[0].get("reward_budget", 0)   # NOTE: got weird key error here sometimes (should not happen)
+            if reward_accumulated and reward_budget:
+                # Get current reward accumulated for all solution submissions for this problem instance
+                results = self.query_db("SELECT SUM(reward) AS active_reward FROM active_solutions_submissions_validations WHERE problem_instance_name = ?", (problem_instance_name,))
+                if results is None:
+                    self.logger.error(f"Error while querying database for active solution submissions for problem instance {problem_instance_name}")
                     continue
-                self.logger.info((
-                    f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore "
-                      "all active solution submissions for this problem instance will be finalized soon"
-                ))
-                break
+                if not results:
+                    # No active solution submissions for this problem instance - continue to next iteration of the loop
+                    continue
+                active_reward = results[0]["active_reward"] or 0
+                # Compare accumulated reward for this problem instance with the budget
+                if reward_accumulated + active_reward >= reward_budget:
+                    try:
+                        self.edit_data_in_db("UPDATE problem_instances SET active = False,  WHERE name = ?", (problem_instance_name,))
+                    except sqlite3.Error as e:
+                        # On error we just log the error and continue to next iteration of the loop - we will try again next time
+                        self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in validation phase loop: {e}")
+                        continue
+                    self.logger.info((
+                        f"Budget for problem instance {problem_instance_name} is finished - the problem instance will not be available anymore "
+                        "all active solution submissions for this problem instance will be finalized soon"
+                    ))
+                    break
 
         # Process final validation after the time limit 
-        self._finalize_validation(problem_instance_name, solution_submission_id)
+        self._finalize_validation(problem_instance_name, solution_submission_id, objective_value)
            
            
-    def _finalize_validation(self, problem_instance_name: str, solution_submission_id: str):
+    def _finalize_validation(self, problem_instance_name: str, solution_submission_id: str, objective_value: float):
         """Finalize validation based on the collected results."""
         self.logger.info(f"Finalizing validation for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
@@ -361,7 +335,7 @@ class CentralNode:
             # Begin a database transaction so that we can do multiple operations in the database and commit them all at once
             # NOTE: This is both for data consistency if one operation in this function fails then we decline the solution submission by default,
             # and in the case that an agent is validating the solution at the same time as we are finalizing it
-            self.db_connection.execute("BEGIN TRANSACTION")
+            database_transactions = []
         
             # Retrieve collected validation results
             results = self.query_db("SELECT * FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", (solution_submission_id,))
@@ -373,21 +347,35 @@ class CentralNode:
             reward_accumulated = sum(result["reward"] for result in results) if results else 0
             
             # Determine the result of the validation phase
-            objective_value = None
-            accepted = False
-            if validations and objective_values:
-                # Calculate final status based on validations, e.g. majority vote
-                acceptance_count = sum(validations)
-                acceptance_ratio = acceptance_count / self.agent_counter
-                if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO:
-                    accepted = True
+            # Check if there is only a single agent on the platform - then we accept the solution by default
+            if self.agent_counter == 1:
+                objective_value = objective_value
+                accepted = True
+                accepted_count = 1
+                rejected_count = 0
+            else:
+                objective_value = None
+                accepted = False
+                accepted_count = 0
+                rejected_count = 0
+                if validations and objective_values:
+                    # Calculate final status based on validations, e.g. majority vote
+                    accepted_count = sum(validations)
+                    rejected_count = len(validations) - accepted_count
+                    acceptance_ratio = accepted_count / self.agent_counter
+                    if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO:
+                        accepted = True
 
-                # Use the most common objective value of the agents that accepted the solution as the objective value for this solution
-                if objective_values:
-                    # Calculate the most common objective value for accepted solutions
-                    accepted_objective_values = [objective_values[i] for i in range(len(validations)) if validations[i]]
-                    if accepted_objective_values:
-                        objective_value = max(set(accepted_objective_values), key=accepted_objective_values.count)
+                    # Use the most common objective value of the agents that accepted the solution as the objective value for this solution
+                    if objective_values:
+                        # Calculate the most common objective value for accepted solutions
+                        if accepted:
+                            accepted_objective_values = [objective_values[i] for i in range(len(validations)) if validations[i]]
+                            if accepted_objective_values:
+                                objective_value = max(set(accepted_objective_values), key=accepted_objective_values.count)
+                        # Or use the most common objective value for all validations if the solution was not accepted
+                        else:
+                            objective_value = max(set(objective_values), key=objective_values.count)
 
             # Get the file path of the solution data
             results = self.query_db("SELECT sol_file_path FROM all_solutions WHERE id = ?", (solution_submission_id,))
@@ -421,30 +409,27 @@ class CentralNode:
 
                 # Update the best solution in the database (or insert if it does not exist)
                 try:
-                    self.edit_data_in_db("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)", 
-                                        (problem_instance_name, solution_submission_id, solution_file_location_best), 
-                                        commit=False
+                    database_transactions.append(("INSERT OR REPLACE INTO best_solutions (problem_instance_name, solution_id, file_location) VALUES (?, ?, ?)",
+                                                 (problem_instance_name, solution_submission_id, solution_file_location_best))
                     )
                 except sqlite3.Error as e:
                     self.logger.error(f"Error while updating best solution in database for problem instance {problem_instance_name}: {e}")
 
             else:
-                self.logger.info(f"Declined solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
+                self.logger.info(f"Declined solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name} with objective value {objective_value}")
 
             # Insert to db accumulated reward given for this solution submission, objective value, if it was accepted or not and remove the solution data file path
             try:
-                self.edit_data_in_db("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ?, sol_file_path = NULL WHERE id = ?", 
-                                    (reward_accumulated, objective_value, accepted, solution_submission_id),
-                                    commit=False
+                database_transactions.append(("UPDATE all_solutions SET reward_accumulated = ?, objective_value = ?, accepted = ?, active = FALSE, accepted_count = ?, rejected_count = ?, sol_file_path = NULL WHERE id = ?",
+                                             (reward_accumulated, objective_value, accepted, accepted_count, rejected_count, solution_submission_id))
                 )
             except sqlite3.Error as e:
                 self.logger.error(f"Error while updating solution submission {solution_submission_id} in database: {e}")
 
             # Update the problem instance database table with the reward given for this solution submission
             try:
-                self.edit_data_in_db("UPDATE problem_instances SET reward_accumulated = reward_accumulated + ? WHERE name = ?", 
-                                     (reward_accumulated, problem_instance_name),
-                                     commit=False
+                database_transactions.append(("UPDATE problem_instances SET reward_accumulated = reward_accumulated + ? WHERE name = ?",
+                                             (reward_accumulated, problem_instance_name))
                 )
             except sqlite3.Error as e:
                 self.logger.error(f"Error while updating problem instance {problem_instance_name} in database: {e}")
@@ -458,9 +443,8 @@ class CentralNode:
                 reward_budget = results[0]["reward_budget"]
                 if reward_accumulated >= reward_budget:
                     try:
-                        self.edit_data_in_db("UPDATE problem_instances SET active = False WHERE name = ?", 
-                                             (problem_instance_name,), 
-                                             commit=False
+                        database_transactions.append(("UPDATE problem_instances SET active = False WHERE name = ?",
+                                                     (problem_instance_name,))
                         )
                     except sqlite3.Error as e:
                         self.logger.error(f"Error while updating problem instance {problem_instance_name} to inactive in finalize validation phase: {e}")
@@ -474,33 +458,34 @@ class CentralNode:
             
             # Clean up all rows in the active_solutions_submissions_validations table for this solution submission
             try:
-                self.edit_data_in_db("DELETE FROM active_solutions_submissions_validations WHERE solution_submission_id = ?", 
-                                     (solution_submission_id,),
-                                     commit=False
+                database_transactions.append(("DELETE FROM active_solutions_submissions_validations WHERE solution_submission_id = ?",
+                                             (solution_submission_id,))
                 )
             except sqlite3.Error as e:
                 self.logger.error(f"Error while deleting validation results for solution submission {solution_submission_id}: {e}")
 
             self.logger.info(f"Ended validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
 
-            # Commit the transactions
-            self.db_connection.commit()
+            # Execute all database transactions
+            try:
+                self.db_manager.execute_transaction(database_transactions)
+            except sqlite3.Error as e:
+                self.logger.error(f"Error while committing transactions for solution submission {solution_submission_id} for problem instance {problem_instance_name}: {e}")
 
 
         except Exception as e:
             # If an error occurs while finalizing the validation then we should decline the solution by default and rollback the database transaction
             self.logger.error(f"Error while finalizing validation for solution submission {solution_submission_id} for problem instance {problem_instance_name} \
-                              - the solution will be declined by default: {e}")
-            self.db_connection.rollback()
+                              - the solution will be declined by default: {e} {traceback.format_exc()}")
             try:
-                self.edit_data_in_db("UPDATE all_solutions SET accepted = FALSE WHERE id = ?", (solution_submission_id,))
+                self.edit_data_in_db("UPDATE all_solutions SET accepted = FALSE, active = FALSE WHERE id = ?", (solution_submission_id,))
             except sqlite3.Error as e:
                 self.logger.error(f"Error while updating solution submission {solution_submission_id} in database: {e}")
 
 
      
     def get_solution_submission_id(self, problem_instance_name: str, agent_id: str) -> list[dict] | None:
-        """Get an active solution submission with at least 30 seconds left for validation that this agent is 
+        """Get an active solution submission with at least 15 seconds left for validation that this agent is 
         not the owner of and that the agent has not validated before.
         
         Args:
@@ -509,14 +494,12 @@ class CentralNode:
         Returns:
             list: A list with the solution submission id or None if an error occurred.
         """
-        # TODO: do we want to give out solutions randomly intead of oldest one? Maybe better so central node is 
-        # not "controlling" anyting?
-        cutoff_time = datetime.now() + timedelta(seconds=30)
+        cutoff_time = datetime.now() + timedelta(seconds=15)
         result = self.query_db(
             """SELECT id 
                 FROM all_solutions 
                 WHERE problem_instance_name = ? 
-                    AND accepted IS NULL 
+                    AND active IS TRUE 
                     AND agent_id != ?
                     AND validation_end_time >= ?
                     AND id NOT IN (
@@ -597,9 +580,89 @@ class CentralNode:
         # Teardown the database
         teardown_database(self.db_path)
         # Disconnect from the database
-        self.__disconnect_from_database()
+        self.db_manager.close_connection(threading.get_ident())
         # Delete the central node temporary data folders
         shutil.rmtree(self.best_solutions_dir, onexc=CentralNode._remove_readonly)
         shutil.rmtree(self.active_solutions_dir, onexc=CentralNode._remove_readonly)
         self.logger.info("Central node stopped")
 
+
+
+##--- DatabaseManager class ---##
+class DatabaseManager:
+    """A class to manage SQLite database connections for multiple threads."""
+    def __init__(self, db_path:str, logger: logging.Logger):
+        self.db_path = db_path
+        self.logger = logger
+        self.thread_local = local()   # stores connection for each thread
+
+
+    def get_connection(self, thread_id, sumbission_id=None) -> sqlite3.Connection:
+        """Get or create a SQLite connection for the current thread."""
+        if not hasattr(self.thread_local, "connection"):
+            self.thread_local.connection = sqlite3.connect(self.db_path, check_same_thread=False)
+            if sumbission_id:
+                self.logger.info(f"Connected to database at {self.db_path} for thread {thread_id} for solution submission {sumbission_id}")
+            else:
+                self.logger.info(f"Connected to database at {self.db_path} for thread {thread_id} (this is web server thread)")
+        return self.thread_local.connection
+    
+    def close_connection(self, thread_id, sumbission_id=None):
+        """Close the SQLite connection for the current thread."""
+        if hasattr(self.thread_local, "connection"):
+            try:
+                self.thread_local.connection.close()
+                if sumbission_id:
+                    self.logger.info(f"Disconnected from database at {self.db_path} for thread {thread_id} for solution submission {sumbission_id}")
+                else:
+                    self.logger.info(f"Disconnected from database at {self.db_path} for thread {thread_id} (this is web server thread)")
+                del self.thread_local.connection
+            except sqlite3.Error as e:
+                self.logger.error(f"Error while disconnecting from database at {self.db_path} for thread {thread_id} for solution submission {sumbission_id}: {e}")
+
+    def execute_query(self, query: str, params: tuple=()) -> list[dict] | None:
+        """Execute a SELECT query and return the results as a list of dictionaries."""
+        connection = self.get_connection(-1)
+        try:
+            cursor = connection.cursor()
+            cursor.execute(query, params)
+            result = cursor.fetchall()
+            # Return a list of dictionaries with the column names as keys
+            columns = [description[0] for description in cursor.description]
+            result_dict = [dict(zip(columns, row)) for row in result]
+            cursor.close()
+            return result_dict
+        except sqlite3.Error as e:
+            self.logger.error(f"Error while querying database at {self.db_path}: {e}")
+            return None
+        
+    def execute_write(self, query: str, params: tuple=(), commit: bool=True):
+        """Execute an INSERT, UPDATE, or DELETE query."""
+        connection = self.get_connection(-1)
+        try:
+            cursor = connection.cursor()
+            cursor.execute(query, params)
+            if commit:
+                connection.commit()
+            cursor.close()
+        except sqlite3.Error as e:
+            connection.rollback()
+            self.logger.error(f"Error while editing data in database at {self.db_path}: {e}")
+            raise sqlite3.Error(f"Error while editing data in database at {self.db_path}: {e}")
+        
+    def execute_transaction(self, operations: list[tuple[str, tuple]]):
+        """
+        Execute multiple queries as a transaction.
+        Args:
+            operations: List of tuples (query, params)
+        """
+        connection = self.get_connection(-1)
+        try:
+            for query, params in operations:
+                cursor = connection.cursor()
+                cursor.execute(query, params)
+            connection.commit()
+        except sqlite3.Error as e:
+            connection.rollback()
+            self.logger.error(f"Error while executing transaction at {self.db_path}: {e}")
+            raise sqlite3.Error(f"Error while executing transaction at {self.db_path}: {e}")

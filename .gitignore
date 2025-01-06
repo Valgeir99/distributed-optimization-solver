@@ -163,3 +163,8 @@ cython_debug/
 #.idea/
 
 .gitattributes
+
+results/
+experiments/experiment_config.json
+experiments/experiments_data/*
+!/experiments/experiments_data/.gitkeep

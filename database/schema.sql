@@ -25,6 +25,9 @@ CREATE TABLE all_solutions (
     objective_value REAL DEFAULT NULL,
     reward_accumulated INTEGER DEFAULT 0,
     accepted BOOLEAN DEFAULT NULL,   -- whether the solution was accepted as current best one or not (NULL if not yet evaluated)
+    active BOOLEAN DEFAULT 1,   -- whether the solution is active (1) on the platform or not (0)
+    accepted_count INTEGER DEFAULT 0,   -- number of agents that have accepted the solution
+    rejected_count INTEGER DEFAULT 0,   -- number of agents that have rejected the solution
     sol_file_path TEXT,   -- location of the solution file (path would only exist during solution validation phase)
     FOREIGN KEY (problem_instance_name) REFERENCES problem_instances (name),
     FOREIGN KEY (agent_id) REFERENCES agent_nodes (id)
