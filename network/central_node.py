@@ -22,7 +22,7 @@ LOG_FILE_PATH: str = ""
 # Central node configuration
 load_dotenv(dotenv_path=NETWORK_PARAMS_DIR)
 SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))  # seconds
-SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of positive validations needed to accept a solution out of all agents registered (e.g. majority)
+SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of positive validations needed to accept a solution out of all agents that can validate (all except the owner of the solution), e.g. majority vote is 0.5
 SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCESSFUL_SOLUTION_SUBMISSION_REWARD"))  # reward for successful solution submission
 SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
 RANDOM_PROBLEM_INSTANCE_POOL_SIZE =  int(os.getenv("RANDOM_PROBLEM_INSTANCE_POOL_SIZE"))   # number of problem instances to choose from when selecting a problem instance for an agent
@@ -362,7 +362,7 @@ class CentralNode:
                     # Calculate final status based on validations, e.g. majority vote
                     accepted_count = sum(validations)
                     rejected_count = len(validations) - accepted_count
-                    acceptance_ratio = accepted_count / self.agent_counter
+                    acceptance_ratio = accepted_count / (self.agent_counter - 1)   # NOTE: we don't count the agent that submitted the solution
                     if acceptance_ratio >= SOLUTION_VALIDATION_CONSENUS_RATIO:
                         accepted = True
 

@@ -13,7 +13,7 @@ EXPERIMENT_DATA_DIR = os.path.join(PROJECT_ROOT, 'experiments', 'experiments_dat
 
 # Central node configuration
 CENTRAL_NODE_HOST = "127.0.0.1"
-CENTRAL_NODE_PORT = 8080
+CENTRAL_NODE_PORT = 8000
 
 # Network parameters directory
 NETWORK_PARAMS_DIR = os.path.join(PROJECT_ROOT, 'network', 'network.params')

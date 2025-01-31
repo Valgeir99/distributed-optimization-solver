@@ -46,19 +46,19 @@ echo "Running experiment from $DIR"
 source .venv/bin/activate
 
 # Start the central node web server on CPU core 0
-taskset -c 11 python -m network.central_node_server &  # Bind to core 0
+taskset -c 0 python -m network.central_node_server &  # Bind to core 0
 CENTRAL_PID=$!
-sleep 10 # Wait for the central node web server to start
+sleep 20 # Wait for the central node web server to start
 echo "Central node web server with PID $CENTRAL_PID is running on core(s):"
 taskset -cp $CENTRAL_PID
 
 # Define total time to run the agents and problem instance to solve
-TOTAL_TIME=1800   # 30 minutes
-PROBLEM_INSTANCE=p0201
+TOTAL_TIME=7200   # 2 hours
+PROBLEM_INSTANCE=tanglegram6
 
 # Start agent nodes on specific cores
-NUM_AGENTS=10
-START_CORE=12
+NUM_AGENTS=20
+START_CORE=1
 AGENT_PIDS=() # To keep track of agent process IDs
 for i in $(seq 1 $NUM_AGENTS); do
     CORE=$((START_CORE + i - 1))

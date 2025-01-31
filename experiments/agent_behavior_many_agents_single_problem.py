@@ -1,4 +1,4 @@
-### Agent loop in experiment - agent will solve a single problem instance ###
+### Agent event loop in experiment - agent will solve a single problem instance ###
 
 # Command line arguments:
 # 1. Execution time in seconds
@@ -8,7 +8,7 @@
 # 1. Downloads a single problem instance
 # 2. Solves only this whole problem instance the whole time
 # 3. After solving the problem instance the agent validates all available solutions from other agents
-# 4. Agent will check the status of his solution submissions every 10 minutes to claim reward (if claimed) the agent does not check the status again
+# 4. Agent will check the status of his solution submissions every 10 minutes to claim reward for a unclaimed accepted solution submission
 # 5. Repeat step 2, 3 and 4 until the execution time has passed
 
 import sys
@@ -24,7 +24,7 @@ execution_time = int(sys.argv[1])
 problem_instance_name = sys.argv[2]
 
 # Agent
-agent = AgentNode()
+agent = AgentNode(experiment_time=execution_time)
 
 # Agent events
 def download_problem_instance_data_by_name(problem_instance_name):
@@ -58,7 +58,7 @@ problem_instance = download_problem_instance_data_by_name(problem_instance_name)
 
 if problem_instance is not None:
     try:
-        # We assume that the max_solve_time defined for the agent is around 1 minute shorter than the solution validation phase
+        # We assume that the max_solve_time defined for the agent is shorter than the solution validation phase
         # so that agent can solve and then validate all solutions from other agents before validation phase is over
         start_time = time.time()
         elapsed_time = 0
@@ -82,16 +82,12 @@ if problem_instance is not None:
         pass
 
     finally:
-
-        time.sleep(5)   # wait a little bit since agent might still be validating a solution
+        time.sleep(5)   # wait a little bit since agent might still be validating a solution (to avoid unexpected errors)
 
         print(f"Agent {agent.id} time spent solving: {time_spent_solving}, time spent validating: {time_spent_validating} out of total time: {elapsed_time}")
         print(f"""Agent might be stuck solving in the end of the execution time so out of the planned execution time of {execution_time} seconds the agent effectively spent \
             \n{time_spent_validating} seconds validating and {execution_time-time_spent_validating} seconds solving ratio of \
-            \n{time_spent_validating/execution_time} and {1-time_spent_validating/execution_time} respectively""")
-        # NOTE agent might be solving for some time after the execution time has passed since the agent might be in the middle of solving a problem instance so we 
-        # account for that in the output
-        
+            \n{time_spent_validating/execution_time} and {1-time_spent_validating/execution_time} respectively""")        
 
 # Clean up agent
 agent.clean_up()

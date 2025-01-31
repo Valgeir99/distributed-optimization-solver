@@ -7,7 +7,7 @@
 # Agent does the following:
 # 1. Downloads a single problem instance
 # 2. Solves only this whole problem instance the whole time
-# 3. Agent will check the status of his solution submissions every 10 minutes to claim reward (if claimed) the agent does not check the status again
+# 3. Agent will check the status of his solution submissions every 10 minutes to claim reward for a unclaimed accepted solution submission
 # 4. Repeat step 2 and 3 until the execution time has passed
 
 import sys
@@ -23,7 +23,7 @@ execution_time = int(sys.argv[1])
 problem_instance_name = sys.argv[2]
 
 # Agent
-agent = AgentNode()
+agent = AgentNode(experiment_time=execution_time)
 
 # Agent events
 def download_problem_instance_data_by_name(problem_instance_name):
@@ -70,8 +70,7 @@ if problem_instance is not None:
         pass
 
     finally:
-
-        time.sleep(5)   # wait a little bit since agent might still be validating a solution
+        time.sleep(5)   # wait a little bit since agent might still be validating a solution (to avoid unexpected errors)
 
 # Clean up agent
 agent.clean_up()

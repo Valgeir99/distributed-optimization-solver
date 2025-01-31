@@ -191,7 +191,7 @@ class BIPSolver:
         del self.problem_data[problem_instance_name]
 
     
-    def _generate_random_bip_solution(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
+    def _generate_random_bip_solution_heuristic(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
         """
         Generates a random feasible solution for a binary integer problem in some time limit.
         Args:
@@ -215,13 +215,13 @@ class BIPSolver:
 
         # Loop until a feasible solution is found within the time limit
         max_contraints_holding = 0
+        start_time = time.time()
         elapsed_time = 0.0
         iter = 0
         iter_stuck = 0   # number of iterations with no improvement in number of contraints holding
-        RANDOM_RESTART_ITER = 10000
+        RANDOM_RESTART_ITER = 1000
         constraints_holding_prev_iter = 0
         while elapsed_time < max_time:
-            start_time = time.time()
             constraints_holding = 0
             iter += 1
             
@@ -302,7 +302,7 @@ class BIPSolver:
         return False, solution, -1, iter
     
 
-    def _generate_random_bip_solution_simple(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
+    def _generate_random_bip_solution_guess(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
         ### Just generate a completely random solution in some time limit ###
 
         # Unpack the problem data
@@ -323,7 +323,7 @@ class BIPSolver:
             if feasible:
                 # Calculate the objective value
                 objective = np.dot(c, solution)
-                return feasible, solution, objective
+                return feasible, solution, objective, iter
             
             elapsed_time = time.time() - start_time
             iter += 1
@@ -399,7 +399,8 @@ class BIPSolver:
             iterations = 0
             while elapsed_time < max_solve_time:
                 # Generate a random feasible solution
-                feasible, solution, obj, iters = self._generate_random_bip_solution(problem_instance_name, max_solve_time_func)
+                #feasible, solution, obj, iters = self._generate_random_bip_solution_guess(problem_instance_name, max_solve_time_func)
+                feasible, solution, obj, iters = self._generate_random_bip_solution_heuristic(problem_instance_name, max_solve_time_func)
                 iterations += iters
                 if feasible:
                     if best_obj is None or obj < best_obj:

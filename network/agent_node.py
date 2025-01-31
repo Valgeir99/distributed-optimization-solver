@@ -1,3 +1,5 @@
+# TODO: change agent node to worker node!!!!!!!! (also filenames)
+
 from typing import Set, Dict, TypedDict, Tuple
 
 import httpx
@@ -7,6 +9,7 @@ import random
 import logging
 import csv
 import json
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from config import CENTRAL_NODE_HOST, CENTRAL_NODE_PORT, EXPERIMENT_DIR
 
@@ -63,8 +66,9 @@ class AgentNode:
     The agent node is only solving a single problem instance at a time, but can store multiple
     problem instances in local storage."""
 
-    def __init__(self):
-        """Initialize the node."""
+    def __init__(self, experiment_time: int = None, malicous: bool = False):
+        """Initialize the node.
+        For the experiments, we allow to set the experiment time (for data gathering) and if the agent is malicous or not."""
 
         # Register to the platform to get a unique id
         self.id = self._register_to_platform()
@@ -80,7 +84,11 @@ class AgentNode:
         self.logger.info(f"Agent node named {self.id} started")
 
         # Agent can be malicous or not
-        self.malicous = False
+        self.malicous = malicous
+
+        # When the experiment for this agent should finish - used now to count the number of solve iterations
+        self.experiment_end_time = datetime.now() + timedelta(seconds=experiment_time) if experiment_time else None
+        self.logger.info(f"Agent node will run until {self.experiment_end_time}")
 
         # Central node web server endpoints
         self.central_node_host = CENTRAL_NODE_HOST
@@ -495,7 +503,10 @@ class AgentNode:
             obj_best = min((self.problem_instances[problem_instance_name]["best_platform_obj"], self.problem_instances[problem_instance_name]["best_self_obj"]), key=lambda x: (x is None, x))
             sol_found, obj, solution_data, iterations = self.solver.solve(problem_instance_name, self.problem_instances[problem_instance_name]["best_self_sol_path"], 
                                                               obj_best, max_solve_time=MAX_SOLVE_TIME)
-            self.solve_iterations += iterations
+            if datetime.now() <= self.experiment_end_time:
+                self.solve_iterations += iterations
+            else:
+                self.logger.info(f"Agent was in the middle of solving problem instance {problem_instance_name} when the experiment time ended - solve iterations: {self.solve_iterations}")
             if sol_found:
                 self.logger.info(f"Found a improved solution found for problem instance {problem_instance_name} with objective value {obj}")
                 # Submit the solution to the central node
