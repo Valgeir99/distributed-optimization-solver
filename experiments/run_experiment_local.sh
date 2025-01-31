@@ -43,7 +43,7 @@ DIR=$(pwd)
 echo "Running experiment from $DIR"
 
 # Activate the virtual environment
-source .venv/bin/activate
+source .venv_linux/bin/activate
 
 # Start the central node web server on CPU core 0
 taskset -c 0 python -m network.central_node_server &  # Bind to core 0
@@ -54,10 +54,10 @@ taskset -cp $CENTRAL_PID
 
 # Define total time to run the agents and problem instance to solve
 TOTAL_TIME=7200   # 2 hours
-PROBLEM_INSTANCE=tanglegram6
+PROBLEM_INSTANCE=glass-sc
 
 # Start agent nodes on specific cores
-NUM_AGENTS=20
+NUM_AGENTS=5
 START_CORE=1
 AGENT_PIDS=() # To keep track of agent process IDs
 for i in $(seq 1 $NUM_AGENTS); do
