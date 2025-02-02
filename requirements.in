@@ -5,5 +5,5 @@ python-dotenv
 pulp
 numpy
 schedule
-
-# TODO: put like seaborn, pandas, numpy, ... for the visualization??
+pandas
+matplotlib

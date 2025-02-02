@@ -1,20 +1,20 @@
-from typing import TypedDict, Dict
+"""
+Solver class for binary integer problems used by the agent node. 
+"""
 
+from typing import TypedDict, Dict
 import numpy as np
 import pulp as pl
 from typing import Tuple
 import time
-import os
-#from scipy.sparse import csr_matrix
 
-# NOTE: since agents will be able to change the state of the solver we need to make sure to always check the state of the solver before we do anything with self.problem_data
 
 class ProblemDataParsed(TypedDict):
     """BIP problem data parsed from .mps file to a format suitable for the solver."""
     name: str
     var_names: list[str]
     c: np.array
-    A: np.array # TODO: make A a csr_matrix
+    A: np.array
     rhs: np.array
     constraint_types: list[str]
 
@@ -302,7 +302,7 @@ class BIPSolver:
         return False, solution, -1, iter
     
 
-    def _generate_random_bip_solution_guess(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
+    def _generate_random_bip_solution_sample(self, problem_instance_name: str, max_time: int) -> Tuple[bool, np.array, float, int]:
         ### Just generate a completely random solution in some time limit ###
 
         # Unpack the problem data
@@ -399,7 +399,7 @@ class BIPSolver:
             iterations = 0
             while elapsed_time < max_solve_time:
                 # Generate a random feasible solution
-                #feasible, solution, obj, iters = self._generate_random_bip_solution_guess(problem_instance_name, max_solve_time_func)
+                #feasible, solution, obj, iters = self._generate_random_bip_solution_sample(problem_instance_name, max_solve_time_func)
                 feasible, solution, obj, iters = self._generate_random_bip_solution_heuristic(problem_instance_name, max_solve_time_func)
                 iterations += iters
                 if feasible:

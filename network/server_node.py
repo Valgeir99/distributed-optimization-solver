@@ -1,3 +1,33 @@
+"""
+Server node ...
+
+Design NOTE on programmed server node:
+- The server node is designed so that there can only be one instance of the server node running at a time (singleton pattern).
+- The server node has a SQLite database that stores relevant information for the platform (see ../database/schema.sql). A database manager 
+  object is used to manage database connections for multiple threads used for the solution validation phase.
+- The server node keeps track of the agent ids that are valid on the platform in a database table (agent_nodes). Agents need to register 
+  with the server node to be able to participate in the platform.
+- The server node stores problem instances in local file storage and information about the instances in the database (problem_instances table)
+- The server node uses temporary storage for the solution data of active solution submissions and best solutions on the platform.
+- The server node stores the best solutions on the platform in a temporary local file storage and information about the best solutions in the database 
+  (best_solutions table). The best solutions are stored in a separate folder (best_solutions) in the server node temporary data folder.
+- For the solution validation phase the server node registers all solution submissions in a database table (all_solutions) where it stores
+  the metadata about the submissions. While a solution submission is active, i.e. it is available for agents to validate, the server node 
+  keeps track the validation results for the solution submission in a database table (active_solutions_submissions_validations). It also 
+  stores the solution data in a temporary storage in its file system. After the solution validation phase is finished the server node 
+  stores the final results in the database (all_solutions table) and removes the temporary storage of the solution data (both from the 
+  the database and the file system).
+- The server node gives a solution to an agent when asking for a solution to validate. Server node gives the agent the oldest active
+  solution submission that the agent did not submit by himself and that the agent has not validated before. The server node will 
+  only give a solution submission that has at least 15 seconds left for validation.
+- The server node "gives" rewards to agents for successful solution submissions and for validating solutions. The server node keeps track 
+  of the rewards in the database for each problem instance and once the reward budget for a problem instance is reached the problem instance 
+  is made inactive and no more solution submissions are accepted for that problem instance.
+- The server node has a web server that agents can communicate with. See server_node_server.py for more information about the API and how
+  the agent can request resources on the platform.
+"""
+
+
 import sqlite3
 import threading
 from fastapi import FastAPI
@@ -13,13 +43,13 @@ import traceback
 from threading import local
 
 from database.database_utils import create_and_init_database, teardown_database
-from config import CENTRAL_NODE_HOST, CENTRAL_NODE_PORT, NETWORK_PARAMS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
+from config import SERVER_NODE_HOST, SERVER_NODE_PORT, NETWORK_PARAMS_DIR, EXPERIMENT_DIR, EXPERIMENT_DATA_DIR
 
 # Experiment configuration
 THIS_EXPERIMENT_DATA_DIR: str = ""
 LOG_FILE_PATH: str = ""
 
-# Central node configuration
+# Server node configuration
 load_dotenv(dotenv_path=NETWORK_PARAMS_DIR)
 SOLUTION_VALIDATION_DURATION = int(os.getenv("SOLUTION_VALIDATION_DURATION"))  # seconds
 SOLUTION_VALIDATION_CONSENUS_RATIO = float(os.getenv("SOLUTION_VALIDATION_CONSENUS_RATIO"))  # ratio of positive validations needed to accept a solution out of all agents that can validate (all except the owner of the solution), e.g. majority vote is 0.5
@@ -27,96 +57,57 @@ SUCCESSFUL_SOLUTION_SUBMISSION_REWARD = int(os.getenv("SUCCESSFUL_SOLUTION_SUBMI
 SOLUTION_VALIDATION_REWARD = int(os.getenv("SOLUTION_VALIDATION_REWARD"))  # reward for validating a solution
 RANDOM_PROBLEM_INSTANCE_POOL_SIZE =  int(os.getenv("RANDOM_PROBLEM_INSTANCE_POOL_SIZE"))   # number of problem instances to choose from when selecting a problem instance for an agent
 
-# Some design NOTE: 
-# - The central node is designed so that there can only be one instance of the central node running at a time (singleton pattern).
-#   If wanting to use multiple central nodes then we would need to implement some kind of synchronization between the central nodes 
-#   (both database synchronization and file system synchronization).
-# - Agents need to register with the central node to be able to participate in the platform. The central node keeps track of the 
-#   agent ids that are valid on the platform in a database table (agent_nodes). 
-# - The central node stores problem instances in file system and information about the instances in the database (problem_instances table).
-# - For each start up of the central node it creates a temporary storage to store the best solutions on the platform (initially empty) in 
-#   its file system. It stores the relevant metadata about the best solution the database (best_solutions table), e.g. the path to the 
-#   file where the best solution is stored.
-# - For the solution validation phase the central node registers all solution submissions in a database table (all_solutions) where it stores
-#   the metadata about the submissions. While a solution submission is active, i.e. it is available for agents to validate, the central node 
-#   keeps track the validation results for the solution submission in a database table (active_solutions_submissions_validations). It also 
-#   stores the solution data in a temporary storage in its file system. After the solution validation phase is finished the central node 
-#   stores the final results in the database (all_solutions table) and removes the temporary storage of the solution data (both from the 
-#   the database and the file system).
-# - RANDOM_PROBLEM_INSTANCE_POOL_SIZE is the number of random problem instances that are given to an agent at a time to choose 
-#   from (could include problem instances agent already has downloaded).
-# - Central node gives a solution to an agent when asking for a solution to validate. Central node gives the agent the oldest active
-#   solution submission that the agent did not submit by himself and that the agent has not validated before. The central node will 
-#   only give a solution submission that has at least 15 seconds left for validation.
-# - SOLUTION_VALIDATION_CONSENUS_RATIO is the ratio of positive validations needed to accept a solution out of all agents registered. So the ratio is 0.5 
-#   if we want majority of all agents on the platform to accept the solution. This means that if there are > 50% malicious agents on the platform then 
-#   no solutions will be accepted. NOTE: for proof of concept we assume that all agents are active so we don't need to consider inactive agents in 
-#   the consensus ratio. If we have a lot of inactive agents then it might be difficult to reach the consensus ratio.
-# - SOLUTION_VALIDATION_DURATION is the time limit for the solution validation phase - after this time the solution is accepted 
-#   or rejected based on consensus.
-# - SUCCESSFUL_SOLUTION_SUBMISSION_REWARD is the reward given for an accepted solution submission.
-# - SOLUTION_VALIDATION_REWARD is the reward given for validating a solution.
-# - If a solution is submitted before reward for the corresponding problem instance is finished then the solution validation phase will 
-#   start like normal and finish after time SOLUTION_VALIDATON_DURATION or until budget is depleted. While solution validation phase is 
-#   running then we check regularly (each minute) if the total reward accumulated (both given out reward and reward for active solution 
-#   submissions) for the corresponding problem instance is depleted. If gone over budget then we mark the problem instance as inactive 
-#   and stop the solution validation phase so it will be finalized at that moment. This means that the reward for the problem instance 
-#   can go over budget but only by a "small" amount, but at the same time we won't loose any active solution submission which might 
-#   improve the best overall solution.
-# - See api endpoints in central_node_server.py for more information about the API and how the agent can request things on the platform.
 
-
-
-##--- CentralNode class ---##
-class CentralNode:
-    """A central node that has a web server (in central_node_server.py) to comminicate with agent nodes and stores data in a local database.
+##--- ServerNode class ---##
+class ServerNode:
+    """A server node that has a web server (server_node_server.py) which handles requests from agent nodes and stores data in a local database.
     It's main purpose is to manage the platform and the solution validation phase for solution submissions from agents."""
 
     _instance = None
 
     def __new__(cls, *args, **kwargs):
-        """Singleton pattern to ensure only one instance of the central node is created."""
+        """Singleton pattern to ensure only one instance of the server node is created."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         else:
-            raise Exception("CentralNode instance already exists!")
+            raise Exception("ServerNode instance already exists!")
         return cls._instance
         
 
     def __init__(self, web_server: FastAPI):
-        """Initialize the central node with a web server and initialize and connect to the database."""
+        """Initialize the server node with a web server and initialize and connect to the database."""
 
-        self.host = CENTRAL_NODE_HOST
-        self.port = CENTRAL_NODE_PORT
+        self.host = SERVER_NODE_HOST
+        self.port = SERVER_NODE_PORT
 
         # Setup the experiment
         self.__setup_experiment()
 
         # Logger
         self.logger = self.__setup_logger()
-        self.logger.info("Central node started")
+        self.logger.info("Server node started")
 
         # Web server
         self.web_server = web_server
 
-        # Setup folders for all temporary data during each run of the central node/platform
-        CENTRAL_DATA_DIR = os.path.join(THIS_EXPERIMENT_DATA_DIR, "central_data_tmp")
-        if os.path.exists(CENTRAL_DATA_DIR):
-            shutil.rmtree(CENTRAL_DATA_DIR, onexc=CentralNode._remove_readonly)
-        os.makedirs(CENTRAL_DATA_DIR, exist_ok=False)
+        # Setup folders for all temporary data during each run of the server node/platform
+        SERVER_DATA_DIR = os.path.join(THIS_EXPERIMENT_DATA_DIR, "server_data_tmp")
+        if os.path.exists(SERVER_DATA_DIR):
+            shutil.rmtree(SERVER_DATA_DIR, onexc=ServerNode._remove_readonly)
+        os.makedirs(SERVER_DATA_DIR, exist_ok=False)
         # Folder to store best soluttions on the platform
-        self.best_solutions_dir = os.path.join(CENTRAL_DATA_DIR, "best_solutions")
+        self.best_solutions_dir = os.path.join(SERVER_DATA_DIR, "best_solutions")
         if os.path.exists(self.best_solutions_dir):
-            shutil.rmtree(self.best_solutions_dir, onexc=CentralNode._remove_readonly)
+            shutil.rmtree(self.best_solutions_dir, onexc=ServerNode._remove_readonly)
         os.makedirs(self.best_solutions_dir, exist_ok=False)
         # Folder to store solution data of active solution submissions
-        self.active_solutions_dir = os.path.join(CENTRAL_DATA_DIR, "active_solutions")
+        self.active_solutions_dir = os.path.join(SERVER_DATA_DIR, "active_solutions")
         if os.path.exists(self.active_solutions_dir):
-            shutil.rmtree(self.active_solutions_dir, onexc=CentralNode._remove_readonly)
+            shutil.rmtree(self.active_solutions_dir, onexc=ServerNode._remove_readonly)
         os.makedirs(self.active_solutions_dir, exist_ok=False)
 
         # Database - create database manager object to manage database connections for multiple threads
-        self.db_path = os.path.join(CENTRAL_DATA_DIR, "central_node.db")
+        self.db_path = os.path.join(SERVER_DATA_DIR, "server_node.db")
         create_and_init_database(self.db_path)
         self.db_manager = DatabaseManager(self.db_path, self.logger)
         self.db_manager.get_connection(threading.get_ident())   # get a connection for the main thread
@@ -126,7 +117,7 @@ class CentralNode:
 
 
     def __setup_experiment(self):
-        """Setup the experiment configuration for central node and agents. Creates the directory for the experiment 
+        """Setup the experiment configuration for server node and agents. Creates the directory for the experiment 
         data (and temporary data) and log file. Saves the paths to a shared json file for agents to access.
         Returns:
             str: The path to the experiment data directory.
@@ -160,9 +151,9 @@ class CentralNode:
 
 
     def __setup_logger(self) -> logging.Logger:
-        """Set up the logger for the central node."""
+        """Set up the logger for the server node."""
         # Create or get the logger for the specific agent
-        logger = logging.getLogger("Central node")
+        logger = logging.getLogger("Server node")
         if not logger.hasHandlers():  # Avoid adding duplicate handlers
             # Create a file handler
             file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a')
@@ -194,7 +185,7 @@ class CentralNode:
 
     def __save_db(self):
         """Save the working database to the experiment folder for this run."""
-        backup_db_path = f"{THIS_EXPERIMENT_DATA_DIR}/central_node.db"
+        backup_db_path = f"{THIS_EXPERIMENT_DATA_DIR}/server_node.db"
         try:
             with open(self.db_path, "rb") as f:
                 with open(backup_db_path, "wb") as f2:
@@ -274,7 +265,7 @@ class CentralNode:
             finally:
                 self.db_manager.close_connection(threading.get_ident(), solution_submission_id)
         
-        # Start a background thread for this solution submission validation - we use daemon threads so that this thread does not continue to run after the main thread (central node server) has finished
+        # Start a background thread for this solution submission validation - we use daemon threads so that this thread does not continue to run after the main thread (server node server) has finished
         validation_thread = threading.Thread(target=validation_thread_function, daemon=True)
         validation_thread.start()
         self.logger.info(f"Started validation phase for solution submission {solution_submission_id} for problem instance {problem_instance_name}")
@@ -295,10 +286,8 @@ class CentralNode:
             if not results:
                 self.logger.error(f"Problem instance {problem_instance_name} not found in database - SHOULD NOT HAPPEN")
                 continue
-            #reward_accumulated = results[0]["reward_accumulated"] or 0
-            reward_accumulated =  results[0].get("reward_accumulated", 0)   # NOTE: got weird key error here sometimes (should not happen)
-            #reward_budget = results[0]["reward_budget"] 
-            reward_budget = results[0].get("reward_budget", 0)   # NOTE: got weird key error here sometimes (should not happen)
+            reward_accumulated =  results[0].get("reward_accumulated", 0)
+            reward_budget = results[0].get("reward_budget", 0)
             if reward_accumulated and reward_budget:
                 # Get current reward accumulated for all solution submissions for this problem instance
                 results = self.query_db("SELECT SUM(reward) AS active_reward FROM active_solutions_submissions_validations WHERE problem_instance_name = ?", (problem_instance_name,))
@@ -385,7 +374,7 @@ class CentralNode:
             solution_file_location_tmp = results[0]["sol_file_path"]
 
             # If the solution is valid then it should be the best solution so far 
-            # NOTE: it is not guaranteed that it is the best solution but there is nothing that the central node should do about that since it is the agents decision!
+            # NOTE: it is not guaranteed that it is the best solution but there is nothing that the server node should do about that since it is the agents decision!
             if accepted:
                 self.logger.info(f"Accepted solution submission for solution submission {solution_submission_id} for problem instance {problem_instance_name} with objective value {objective_value}")
                 # Save solution data to file storage with best solutions
@@ -404,7 +393,6 @@ class CentralNode:
                     self.logger.error(f"Error while saving best solution to file {solution_file_location_best}: {e}")
 
                 # "Give" reward to the agent who submitted the solution
-                # NOTE: we don't implement proper reward mechanism just emulating it by adding to the reward given for this solution submission
                 reward_accumulated += SUCCESSFUL_SOLUTION_SUBMISSION_REWARD
 
                 # Update the best solution in the database (or insert if it does not exist)
@@ -563,9 +551,9 @@ class CentralNode:
 
 
     def stop(self):
-        """Stop the central node - save and close the database"""
+        """Stop the server node - save and close the database"""
         # Print the active solution submissions
-        msg = "Active solution submissions after stopping central node:"
+        msg = "Active solution submissions after stopping server node:"
         results = self.query_db("SELECT id FROM all_solutions WHERE accepted IS NULL")
         if results is None:
             self.logger.error("Error while querying database for active solution submissions")
@@ -581,10 +569,10 @@ class CentralNode:
         teardown_database(self.db_path)
         # Disconnect from the database
         self.db_manager.close_connection(threading.get_ident())
-        # Delete the central node temporary data folders
-        shutil.rmtree(self.best_solutions_dir, onexc=CentralNode._remove_readonly)
-        shutil.rmtree(self.active_solutions_dir, onexc=CentralNode._remove_readonly)
-        self.logger.info("Central node stopped")
+        # Delete the server node temporary data folders
+        shutil.rmtree(self.best_solutions_dir, onexc=ServerNode._remove_readonly)
+        shutil.rmtree(self.active_solutions_dir, onexc=ServerNode._remove_readonly)
+        self.logger.info("Server node stopped")
 
 
 

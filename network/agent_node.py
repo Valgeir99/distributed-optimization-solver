@@ -1,7 +1,25 @@
-# TODO: change agent node to worker node!!!!!!!! (also filenames)
+"""
+Agent node programmed to solve optimization problems for the proof of concept distributed optimization solver platform.
+
+Design NOTE on programmed agent:
+- The agent request resources from the server node (problem instances, best solutions etc.) and communicates with the server node through HTTP requests 
+  (server node needs to be running and accessible for the agent to work)
+- The agent needs to download problem instance before he can do anything with it (solve, validate, get objective value of solution etc.)
+- The agent uses local storage where he stores problem instances and best solutions (we create a temporary folder for each agent node where we store this data)
+- The agent has a solver, parser and verifier compnent which are implemented in ../solver/bip_solver.py
+- The agent can only solve one problem instance at a time (but can store multiple problem instances)
+- The agent checks the status of the problem instance before solving it (if it is no longer active the agent will not solve it)
+- The agent downloads the best solution from the server node before solving a problem instance so he is not submitting a worse solution than the best solution on the platform
+- The agent solves a problem instance until he finds a better feasible solution than the best solution on the platform, or until MAX_SOLVE_TIME is reached (see solver)
+- The agent assumes minimization problems (and solver as well)
+- The agent downloads the best solution from the server node before validating a solution
+- The agent validates a solution by comparing it to the best solution on the platform and the best solution found by itself
+- The agent keeps track of the best solutions on the platform and the best solutions found by itself
+- The agent can be malicous or not (malicous agent always returns False when validating a solution)
+"""
+
 
 from typing import Set, Dict, TypedDict, Tuple
-
 import httpx
 import shutil
 import os
@@ -11,7 +29,7 @@ import csv
 import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from config import CENTRAL_NODE_HOST, CENTRAL_NODE_PORT, EXPERIMENT_DIR
+from config import SERVER_NODE_HOST, SERVER_NODE_PORT, EXPERIMENT_DIR
 
 from solver.bip_solver import BIPSolver
 
@@ -41,30 +59,14 @@ class ProblemInstanceInfo(TypedDict):
     active: bool   # True if the problem instance is still active on the platform, False otherwise
 
 
-# Some design NOTE:
-# - Code not designed to be run in a multi-threaded environment (would need to add locks for shared data if multiple threads)
-# - The agent needs to download problem instance before he can do anything with it (solve, validate, get objective value of solution etc.)
-# - The agent can only solve one problem instance at a time (but can store multiple problem instances)
-# - The agent checks the status of the problem instance before solving it (if it is no longer active the agent will not solve it)
-# - The agent downloads the best solution from the central node before solving a problem instance so he is not submitting a worse solution than the best solution on the platform
-# - The agent solves a problem instance until he finds a better feasible solution than the best solution on the platform, or until MAX_SOLVE_TIME is reached
-# - The agent assumes minimization problems (and solver as well)
-# - The agent and solver are seperate entities BUT they need to have access to the same local file storage
-# - The agent downloads the best solution from the central node before validating a solution
-# - The agent validates a solution by comparing it to the best solution on the platform and the best solution found by itself (as an agent it is 
-#   logical not to accept a solution that is worse than your own best solution)
-# - The agent keeps track of the best solutions on the platform and the best solutions found by itself
-# - The agent can be malicous or not (malicous agent always returns False when validating a solution)
-
 class AgentNode:
-    # TODO: fix
-    """An agent node that knows endpoints of central node web server and can communicate through there. 
+    """An agent node that knows HTTP endpoints of server node web server and can communicate through those. 
     In the optimization solver platform this proof of concept is built from, the agent node is 
     autonomous and should be implemented however the owner of the node wants, the owner just needs 
     to follow the message protocol for the platform in order to be able to build his agent node. 
-    However, in this proof of concept all agent nodes are the same and behave as described in this class.
-    The agent node is only solving a single problem instance at a time, but can store multiple
-    problem instances in local storage."""
+    However, in this proof of concept all agent nodes are the same and behave as described above in this class.
+    The agent node is made to operate sequentially, it only solves or validates a single problem instance at a time.
+    However, the agent can store multiple problem instances in local storage."""
 
     def __init__(self, experiment_time: int = None, malicous: bool = False):
         """Initialize the node.
@@ -73,7 +75,7 @@ class AgentNode:
         # Register to the platform to get a unique id
         self.id = self._register_to_platform()
 
-        # With all http request we will use the agent id as a header so that the central node can identify the agent
+        # With all http request we will use the agent id as a header so that the server node can identify the agent
         self.headers = {"agent-id": self.id}
 
         # Experiment configuration
@@ -90,9 +92,9 @@ class AgentNode:
         self.experiment_end_time = datetime.now() + timedelta(seconds=experiment_time) if experiment_time else None
         self.logger.info(f"Agent node will run until {self.experiment_end_time}")
 
-        # Central node web server endpoints
-        self.central_node_host = CENTRAL_NODE_HOST
-        self.central_node_port = CENTRAL_NODE_PORT
+        # Server node web server endpoints
+        self.server_node_host = SERVER_NODE_HOST
+        self.server_node_port = SERVER_NODE_PORT
 
         # Folder to store all temporary agent data for each run of the agent
         self.agent_data_path = f"{AGENT_DATA_DIR}/agent_{self.id}"
@@ -123,7 +125,7 @@ class AgentNode:
 
 
     def _load_experiment_config(self):
-        """Load the experiment configuration that central node created from the config file."""
+        """Load the experiment configuration that server node created from the config file."""
         global THIS_EXPERIMENT_DIR, LOG_FILE_PATH, AGENT_DATA_DIR
         with open(os.path.join(EXPERIMENT_DIR, "experiment_config.json"), "r") as f:
             config = json.load(f)
@@ -152,7 +154,7 @@ class AgentNode:
         return logger
 
 
-    ## Request functions to communicate with central node server ##
+    ## Request functions to communicate with server node web server ##
 
     def _register_to_platform(self) -> str:
         """Register to the platform by getting a unique id to identify with.
@@ -160,23 +162,23 @@ class AgentNode:
         Returns:
             id: The unique id of the agent node
         Raises:
-            Exception: If the agent node fails to get an id from the central node
+            Exception: If the agent node fails to get an id from the server node
         """
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/register", timeout=30.0)
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/register", timeout=30.0)
         if response.status_code != 200:
-            raise Exception(f"Agent node cannot start - Failed to get id from central node - HTTP Error {response.status_code}: {response.text}")
+            raise Exception(f"Agent node cannot start - Failed to get id from server node - HTTP Error {response.status_code}: {response.text}")
         return response.json()["agent_id"]
     
 
     def download_problem_instance(self) -> str | None:
-        """Download a problem instance from the central node from a pool of problem instances 
-        offerd by the central node and save it in local storage. Agent uses random selection.
+        """Download a problem instance from the server node from a pool of problem instances 
+        offerd by the server node and save it in local storage. Agent uses random selection.
         Returns:
             problem_instance_name: The name of the problem instance that was downloaded | None if no problem instance was downloaded
         """
         self.logger.info("Request to download any problem instance...")
         # Get pool of problem instances
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/info", headers=self.headers, timeout=30.0)
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/problem_instances/info", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to fetch pool of problem instances - HTTP Error {response.status_code}: {response.text}")
             return None
@@ -200,7 +202,7 @@ class AgentNode:
 
     
     def download_problem_instance_data_by_name(self, problem_instance_name: str):
-        """Download a problem instance from the central node by its id and save it to local storage.
+        """Download a problem instance from the server node by its id and save it to local storage.
         It downloads the problem instance data, including the problem instance file and the best solution file 
         if it exists.
         Args:
@@ -209,7 +211,7 @@ class AgentNode:
             problem_instance_name: The name of the problem instance that was downloaded | None if the problem instance was not downloaded
         """
         self.logger.info(f"Request to downloaod problem instance {problem_instance_name}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/problem_instances/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to download problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -281,14 +283,14 @@ class AgentNode:
 
 
     def update_problem_instance_status(self, problem_instance_name: str):
-        """Update the status of a problem instance in memory by checking with the central node to see if it is still active or not.
+        """Update the status of a problem instance in memory by checking with the server node to see if it is still active or not.
         If the problem instance is no longer active, the agent tags it as inactive and removes it from the agent's solver.
         
         Args:
             problem_instance_name: The name of the problem instance to check status for
         """
         self.logger.info(f"Request to check status of problem instance {problem_instance_name}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/problem_instances/status/{problem_instance_name}", headers=self.headers, timeout=30.0)
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/problem_instances/status/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to check status of problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -308,7 +310,7 @@ class AgentNode:
                 
 
     def download_best_solution(self, problem_instance_name: str):
-        """Download the best solution for a problem instance from the central node and save it to local storage."""
+        """Download the best solution for a problem instance from the server node and save it to local storage."""
         self.logger.info(f"Request to download best solution for problem instance {problem_instance_name}...")
 
         # Check if the agent has the problem instance stored
@@ -316,7 +318,7 @@ class AgentNode:
             self.logger.error(f"Agent does not have problem instance {problem_instance_name} stored")
             return
         
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/best/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/solutions/best/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to download best solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -345,10 +347,10 @@ class AgentNode:
 
 
     def submit_solution(self, problem_instance_name: str, solution_data: str, objective_value: float):
-        """Submit a solution to the central node get solution submission id in response
+        """Submit a solution to the server node get solution submission id in response
         so that agent can track the status of the solution submission."""
         self.logger.info(f"Request to submit solution for problem instance {problem_instance_name}...")
-        response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/{problem_instance_name}", 
+        response = httpx.post(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/solutions/submit/{problem_instance_name}", 
                               json={"solution_data": solution_data, "objective_value": objective_value},
                               headers=self.headers,
                               timeout=30.0)
@@ -361,11 +363,11 @@ class AgentNode:
 
 
     def check_submit_solution_status(self, solution_submission_id: str):
-        """Check the status of a solution submission with the central node to see how the validation is going. 
+        """Check the status of a solution submission with the server node to see how the validation is going. 
         Once the solution submission is validated, the agent will update the reward he has accumulated for this problem 
         instance and remove the solution submission from active solution submissions."""
         self.logger.info(f"Request to check status of solution submission {solution_submission_id}...")
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/submit/status/{solution_submission_id}", headers=self.headers, timeout=30.0)
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/solutions/submit/status/{solution_submission_id}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to check status of solution submission {solution_submission_id} - HTTP Error {response.status_code}: {response.text}")
             return
@@ -384,8 +386,8 @@ class AgentNode:
 
 
     def validate_solution_request(self, problem_instance_name: str) -> bool:
-        """Validate a solution with the central node. The agent must have the problem instance stored in order to validate the solution.
-        The agent will download the solution from the central node (get request), validate it and send result to central node (post request).
+        """Validate a solution with the server node. The agent must have the problem instance stored in order to validate the solution.
+        The agent will download the solution from the server node (get request), validate it and send result to server node (post request).
         Args:
             problem_instance_name: The name of the problem instance that the solution belongs to
         Returns:
@@ -402,24 +404,24 @@ class AgentNode:
             self.logger.error(f"Problem instance {problem_instance_name} is no longer active on the platform")
             return False
         
-        # Send request to central node to validate the solution - get sent solution back from central node
-        response = httpx.get(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
+        # Send request to server node to validate the solution - get sent solution back from server node
+        response = httpx.get(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/solutions/validate/download/{problem_instance_name}", headers=self.headers, timeout=30.0)
         if response.status_code != 200:
             self.logger.error(f"Failed to validate a solution for problem instance {problem_instance_name} - HTTP Error {response.status_code}: {response.text}")
             # If no solution to validate then the agent cannot validate
             return False
         solution = response.json()
 
-        # Validate the solution and calculate the objective value - first download best solution from central node (this is agent implementation decision)
+        # Validate the solution and calculate the objective value - first download best solution from server node (this is agent implementation decision)
         self.download_best_solution(problem_instance_name)
         solution_data = solution["solution_data"]
         validation_result, objective_value = self.validate_solution(problem_instance_name, solution_data)
         self.logger.info(f"Solution validation result: accepted={validation_result}")
 
-        # Send the validation result back to the central node
+        # Send the validation result back to the server node
         solution_submission_id = solution["solution_submission_id"]
-        self.logger.info(f"Requesting to submit validation result to central node for solution submission {solution_submission_id}...")
-        response = httpx.post(f"http://{CENTRAL_NODE_HOST}:{CENTRAL_NODE_PORT}/solutions/validate/{solution_submission_id}", 
+        self.logger.info(f"Requesting to submit validation result to server node for solution submission {solution_submission_id}...")
+        response = httpx.post(f"http://{SERVER_NODE_HOST}:{SERVER_NODE_PORT}/solutions/validate/{solution_submission_id}", 
                               json={"response": validation_result, "objective_value": objective_value},
                               headers=self.headers,
                               timeout=30.0)
@@ -495,7 +497,7 @@ class AgentNode:
         # Set the problem instance that the agent is solving
         self.solving_problem_instance_name = problem_instance_name
 
-        # Get the best solution from the central node so that we don't submit a solution that is worse than the best solution on the platform
+        # Get the best solution from the server node so that we don't submit a solution that is worse than the best solution on the platform
         self.download_best_solution(problem_instance_name)
 
         # Generate a better solution than the best one on the platform / best one found by the agent using the solver
@@ -509,7 +511,7 @@ class AgentNode:
                 self.logger.info(f"Agent was in the middle of solving problem instance {problem_instance_name} when the experiment time ended - solve iterations: {self.solve_iterations}")
             if sol_found:
                 self.logger.info(f"Found a improved solution found for problem instance {problem_instance_name} with objective value {obj}")
-                # Submit the solution to the central node
+                # Submit the solution to the server node
                 self.submit_solution(problem_instance_name, solution_data, obj)
                 # Update the agent's best solution found by itself (already written to local storage in solve() function above)
                 self.problem_instances[problem_instance_name]["best_self_obj"] = obj

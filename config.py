@@ -11,9 +11,9 @@ DATA_PATH = os.path.join(PROJECT_ROOT, 'database', 'data.sql')
 EXPERIMENT_DIR = os.path.join(PROJECT_ROOT, 'experiments')
 EXPERIMENT_DATA_DIR = os.path.join(PROJECT_ROOT, 'experiments', 'experiments_data')
 
-# Central node configuration
-CENTRAL_NODE_HOST = "127.0.0.1"
-CENTRAL_NODE_PORT = 8000
+# Server node configuration
+SERVER_NODE_HOST = "127.0.0.1"
+SERVER_NODE_PORT = 8000
 
 # Network parameters directory
 NETWORK_PARAMS_DIR = os.path.join(PROJECT_ROOT, 'network', 'network.params')
