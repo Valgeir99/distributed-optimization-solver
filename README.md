@@ -4,9 +4,9 @@ Python code of the implemented proof of concept made for my Master's Thesis proj
 
 The implementation is a centralized version of the distributed optimization solver. Agent nodes compete to generate solutions to binary optimization problems. Server node is a web server with a database, and stores the problem instance and solution data on the platform. Agent nodes can access resources from the server node by making HTTP requests, for example download problem instances, submit solutions, and more.
 
-<div style="display: flex; justify-content: center;">
+<p align="center">
     <img src="proof_of_concept.png" width="400">
-</div>
+</p>
 <br>
 
 Results from the experiments conducted for my thesis can be found in the `results/` folder. Analysis of the results can be found in the thesis report which were generated using the IPython notebook `results/analysis.ipynb`.
